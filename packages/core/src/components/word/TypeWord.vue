@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import type { Question, Word } from '../../types'
-import { getDefaultWord, IdentifyMethod, ShortcutKey, WordPracticeType } from '../../types'
-import { useBaseStore, useSettingStore } from '../../stores'
+import {
+  getDefaultWord,
+  IdentifyMethod,
+  ShortcutKey,
+  WholeInputSubmitMode,
+  WordInputMode,
+  WordPracticeType,
+} from '../../types'
+import { resolveWordInputMode, useBaseStore, usePracticeStore, useSettingStore } from '../../stores'
 import {
   cancelWordPracticeAudio,
   resetActiveWordPlayCount,
@@ -11,7 +18,7 @@ import {
 } from '../../hooks/sound'
 import { WordPlayTrigger, useWordPracticeAudio } from '../../composables/useWordPracticeAudio'
 import { emitter, EventKey, useEventsByWatch } from '../../utils/eventBus'
-import { computed, onMounted, onUnmounted, toRef, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, toRef, watch } from 'vue'
 import SentenceHightLightWord from './SentenceHightLightWord.vue'
 import ClickableEnglishText from './ClickableEnglishText.vue'
 import ClickableWord from './ClickableWord.vue'
@@ -22,9 +29,10 @@ import Space from '../article/Space.vue'
 import { useI18n } from 'vue-i18n'
 import { useWordOptions } from '../../hooks/dict.ts'
 import { openWordCollectPicker } from '../../hooks/useWordCollectPicker.ts'
-import { ref } from 'vue'
 import TranslationList from './TranslationList.vue'
-import { useOnKeyboardEventListener } from '../../hooks/event.ts'
+import { emitConfiguredShortcutEvents, useOnKeyboardEventListener } from '../../hooks/event.ts'
+import { useDisableEventListener } from '@typewords/utils'
+import { Rating } from 'ts-fsrs'
 
 const SENTENCE_PLAY_SHORTCUT_KEYS = [
   ShortcutKey.PlaySentence1,
@@ -43,15 +51,18 @@ const { t: $t } = useI18n()
 interface IProps {
   word: Word
   question?: Question
+  initialWrongTimes?: number
 }
 
 const props = withDefaults(defineProps<IProps>(), {
   word: () => getDefaultWord(),
+  initialWrongTimes: 0,
 })
 
 const emit = defineEmits<{
   complete: []
   wrong: []
+  rating: [rating: Rating]
   know: []
   mastered: []
   skip: []
@@ -64,6 +75,13 @@ let showFullWord = $ref(false)
 let showWordResult = ref(false)
 //错误次数
 let wrongTimes = ref(0)
+const wholeInputEl = ref<HTMLInputElement | null>(null)
+const wholeInputFocused = ref(false)
+let wholeFailureCount = props.initialWrongTimes
+let wholeSoftError = $ref(false)
+let wholeCorrectionPending = false
+let wholeAutoRearmed = false
+let wholeInputTipKey = ''
 //输入锁定，因为跳转到下一个单词有延时，如果重复在延时期间内重复输入，导致会跳转N次
 let inputLock = false
 let waitClear = false
@@ -76,6 +94,7 @@ let cursor = $ref({
   left: 0,
 })
 const settingStore = useSettingStore()
+const practiceStore = usePracticeStore()
 const store = useBaseStore()
 
 const playBeep = usePlayBeep()
@@ -158,6 +177,11 @@ function resetState(trigger: WordPlayTrigger) {
   currentPracticeSentenceIndex = -1
   wordCompletedTime = 0
   wrongTimes.value = 0
+  wholeFailureCount = props.initialWrongTimes
+  wholeSoftError = false
+  wholeCorrectionPending = false
+  wholeAutoRearmed = false
+  wholeInputTipKey = ''
   highlightedSentenceIndex.value = -1
   resetActiveWordPlayCount(props.word.word)
   if (settingStore.wordSound && settingStore.wordPracticeType !== WordPracticeType.Dictation) {
@@ -165,6 +189,7 @@ function resetState(trigger: WordPlayTrigger) {
   }
   updateCurrentWordInfo()
   checkCursorPosition()
+  focusWholeInput()
 }
 
 // 监听输入变化，更新当前单词信息
@@ -220,6 +245,7 @@ function repeat() {
     wrong = input = ''
     wordRepeatCount++
     inputLock = false
+    focusWholeInput()
 
     if (settingStore.wordSound) playWord(WordPlayTrigger.RepeatWord)
   }, settingStore.waitTimeForChangeWord)
@@ -246,6 +272,84 @@ const right = $computed(() => {
     return a === b
   }
 })
+
+function emitWholeRating(rating: Rating) {
+  if (wholeInputEnabled.value) emit('rating', rating)
+}
+
+function markWholeInputAsAgain() {
+  emitWholeRating(Rating.Again)
+}
+
+function completeWholeInput() {
+  const rating = wholeFailureCount === 0 ? Rating.Good : wholeFailureCount === 1 ? Rating.Hard : Rating.Again
+  emitWholeRating(rating)
+  wholeSoftError = false
+  inputLock = true
+  showWordResult.value = true
+  wordCompletedTime = Date.now()
+  playCorrect()
+  wholeInputEl.value?.blur()
+
+  if (settingStore.wordSound && settingStore.wordPracticeType === WordPracticeType.Dictation) {
+    playWord(WordPlayTrigger.DictationReveal, { volumeRef: volumeIconRef })
+  }
+  if (
+    settingStore.autoNextWord &&
+    [WordPracticeType.FollowWrite, WordPracticeType.Spell].includes(settingStore.wordPracticeType)
+  ) {
+    completeTypeWord(true)
+  }
+}
+
+function recordWholeInputFailure() {
+  wholeFailureCount++
+  wholeSoftError = true
+  wholeCorrectionPending = true
+  wholeAutoRearmed = false
+  typo()
+  playBeep()
+  if (wholeFailureCount >= 2) {
+    emitWholeRating(Rating.Again)
+  }
+  Toast.warning(wholeFailureCount === 1 ? '拼写有误，请修改后重试' : '仍未拼写正确，本次记为 Again', {
+    duration: 1800,
+  })
+  if (settingStore.inputWrongClear) {
+    input = ''
+    wholeAutoRearmed = true
+  }
+  focusWholeInput()
+}
+
+function submitWholeInput(options: { countFailure: boolean }) {
+  if (!wholeInputEnabled.value || inputLock || !input) return
+  if (right) {
+    completeWholeInput()
+    return
+  }
+  if (options.countFailure) {
+    recordWholeInputFailure()
+  } else {
+    wholeSoftError = true
+  }
+}
+
+function onWholeInput(e: Event) {
+  input = (e.target as HTMLInputElement).value
+  wholeSoftError = false
+  const targetLength = props.word.word.length
+  if (wholeCorrectionPending && input.length < targetLength) {
+    wholeAutoRearmed = true
+  }
+  if (settingStore.wholeInputSubmitMode !== WholeInputSubmitMode.Auto || input.length !== targetLength) return
+
+  submitWholeInput({ countFailure: !wholeCorrectionPending || wholeAutoRearmed })
+}
+
+function onWholeInputEnter() {
+  submitWholeInput({ countFailure: true })
+}
 
 let showNotice = false
 
@@ -277,6 +381,7 @@ function unknown(e) {
   if (isSelfAssessment) {
     if (!showWordResult.value) {
       showWordResult.value = true
+      markWholeInputAsAgain()
       typo()
       if (settingStore.wordSound) playWord(WordPlayTrigger.RevealUnknown)
       return
@@ -313,6 +418,63 @@ function select(e, index: number) {
 }
 
 let currentPracticeSentenceIndex = $ref(-1)
+
+const wholeInputEnabled = computed(
+  () =>
+    resolveWordInputMode(settingStore, practiceStore.stage, settingStore.wordPracticeType) === WordInputMode.Whole &&
+    currentPracticeSentenceIndex === -1 &&
+    [
+      WordPracticeType.FollowWrite,
+      WordPracticeType.Spell,
+      WordPracticeType.Listen,
+      WordPracticeType.Dictation,
+    ].includes(settingStore.wordPracticeType)
+)
+
+useDisableEventListener(() => wholeInputFocused.value && wholeInputEnabled.value)
+
+function focusWholeInput() {
+  if (!wholeInputEnabled.value || inputLock) return
+  nextTick(() => wholeInputEl.value?.focus())
+}
+
+function onWholeInputKeydown(e: KeyboardEvent) {
+  e.stopPropagation()
+  // 与全局监听复用同一套用户快捷键映射；常见编辑快捷键仍交给原生输入框。
+  if ((e.ctrlKey || e.metaKey) && ['KeyC', 'KeyA', 'KeyD'].includes(e.code)) return
+  if (
+    e.key === 'Enter' &&
+    settingStore.wholeInputSubmitMode === WholeInputSubmitMode.Enter &&
+    !inputLock
+  ) {
+    e.preventDefault()
+    onWholeInputEnter()
+    return
+  }
+  const shortcutEvents = emitConfiguredShortcutEvents(e, settingStore.shortcutKeyMap)
+  if (shortcutEvents.length) {
+    if (shortcutEvents.includes(ShortcutKey.ShowWord) && !e.repeat) {
+      wholeInputTipKey = e.code || e.key
+    }
+    return
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return
+  if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') {
+    playKeyboardAudio()
+  }
+}
+
+function onWholeInputKeyup(e: KeyboardEvent) {
+  e.stopPropagation()
+  if (wholeInputTipKey && wholeInputTipKey === (e.code || e.key)) {
+    wholeInputTipKey = ''
+    hideWord()
+  }
+}
+
+watch(wholeInputEnabled, enabled => {
+  if (enabled) focusWholeInput()
+})
 
 async function onTyping(e: KeyboardEvent) {
   if (waitClear) {
@@ -580,8 +742,11 @@ function del() {
 
 function showWord() {
   if (settingStore.allowWordTip) {
-    //如果不是跟写模式，查看单词一律标记为错词
-    if (settingStore.wordPracticeType !== WordPracticeType.FollowWrite || settingStore.dictation) {
+    if (wholeInputEnabled.value) {
+      markWholeInputAsAgain()
+      typo()
+    } else if (settingStore.wordPracticeType !== WordPracticeType.FollowWrite || settingStore.dictation) {
+      // 经典模式沿用原规则：非跟写或默写时查看单词才记错。
       typo()
     }
     if (
@@ -638,6 +803,7 @@ function checkIsWrong() {
   if (settingStore.wordPracticeType === WordPracticeType.Dictation || settingStore.dictation) {
     if (!showWordResult.value && !right) {
       //输入完成，或者已显示的情况下，不记入错误
+      if (wholeInputEnabled.value) wholeFailureCount++
       typo()
     }
   }
@@ -664,6 +830,7 @@ watch([() => input, () => showFullWord, () => settingStore.dictation], checkCurs
 //检测光标位置
 function checkCursorPosition() {
   _nextTick(() => {
+    if (wholeInputEnabled.value) return
     let cursorOffset
     if (isTypingSentence()) {
       cursorOffset = { top: 0, left: 0 }
@@ -762,6 +929,7 @@ defineExpose({
   play,
   showWordResult,
   wrongTimes,
+  isWholeInputComplete: () => showWordResult.value && inputLock,
   getCollectAnchor: () => collectAnchorRef.value,
 })
 </script>
@@ -816,10 +984,27 @@ defineExpose({
           class="word my-1"
           :class="wrong && !isTypingSentence() ? 'is-wrong' : ''"
           :style="{ fontSize: settingStore.fontSize.wordForeignFontSize + 'px' }"
-          @mouseenter="showWord"
+          @mouseenter="!wholeInputEnabled && showWord()"
           @mouseleave="mouseleave"
         >
-          <div v-if="settingStore.wordPracticeType === WordPracticeType.Dictation">
+          <div v-if="wholeInputEnabled" class="whole-input-wrap" :class="{ error: wholeSoftError }">
+            <input
+              ref="wholeInputEl"
+              class="whole-input"
+              :value="input"
+              :disabled="inputLock"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              @focus="wholeInputFocused = true"
+              @blur="wholeInputFocused = false"
+              @input="onWholeInput"
+              @keydown="onWholeInputKeydown"
+              @keyup="onWholeInputKeyup"
+              @paste.prevent
+            />
+          </div>
+          <div v-else-if="settingStore.wordPracticeType === WordPracticeType.Dictation">
             <div
               class="letter text-align-center w-full inline-block"
               v-opacity="!settingStore.dictation || showWordResult || showFullWord"
@@ -1115,7 +1300,7 @@ defineExpose({
       </div>
     </div>
     <div
-      v-if="!editingNote"
+      v-if="!editingNote && !wholeInputEnabled"
       class="cursor"
       :style="{
         top: cursor.top + 'px',
@@ -1130,6 +1315,40 @@ defineExpose({
 <style scoped lang="scss">
 .dictation {
   border-bottom: 2px solid gray;
+}
+
+.whole-input-wrap {
+  width: min(32rem, 78vw);
+  border-bottom: 2px solid var(--color-font-3);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+
+  &:focus-within {
+    border-color: var(--color-select-bg);
+  }
+
+  &.error {
+    border-color: var(--color-red, #ef4444);
+    box-shadow: 0 2px 0 color-mix(in srgb, var(--color-red, #ef4444) 20%, transparent);
+  }
+}
+
+.whole-input {
+  width: 100%;
+  min-height: 1.35em;
+  padding: 0.15em 0.25em;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: 0;
+  text-align: center;
+
+  &:disabled {
+    opacity: 1;
+  }
 }
 
 .typing-word {
@@ -1209,7 +1428,7 @@ defineExpose({
   .sentence {
     @apply rounded-lg px-3 py-2 -mx-3;
     background: transparent;
-    transition: all .3s;
+    transition: all 0.3s;
   }
   .sentence-highlight {
     background: rgba(124, 58, 237, 0.1);

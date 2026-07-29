@@ -12,6 +12,41 @@ import { useDataSyncPersistence } from './useDataSyncPersistence'
 import dayjs from 'dayjs'
 
 type DayGroup = { firstStart: number; totalSpend: number; daySegments: [number, number][] }
+type PendingWordSync = {
+  data: PracticeWordCacheStored | null
+  updatedAt: string
+  push: (data: PracticeWordCacheStored | null, updatedAt: string) => Promise<boolean>
+}
+
+let pendingWordSync: PendingWordSync | null = null
+let wordSyncTimer: ReturnType<typeof setTimeout> | null = null
+let wordSyncRunning = false
+let wordLocalWriteQueue: Promise<void> = Promise.resolve()
+
+function scheduleWordRemoteSync(sync: PendingWordSync) {
+  pendingWordSync = sync
+  if (wordSyncTimer) clearTimeout(wordSyncTimer)
+  wordSyncTimer = setTimeout(flushWordRemoteSync, 800)
+}
+
+async function flushWordRemoteSync() {
+  if (wordSyncRunning || !pendingWordSync) return
+  const current = pendingWordSync
+  pendingWordSync = null
+  wordSyncRunning = true
+  try {
+    const success = await current.push(current.data, current.updatedAt)
+    if (!success && !pendingWordSync) {
+      pendingWordSync = current
+    }
+  } finally {
+    wordSyncRunning = false
+    if (pendingWordSync) {
+      if (wordSyncTimer) clearTimeout(wordSyncTimer)
+      wordSyncTimer = setTimeout(flushWordRemoteSync, pendingWordSync === current ? 10_000 : 0)
+    }
+  }
+}
 
 /**
  * 将进行中的练习统计（PracticeState）落库到 store.sdict.statistics。
@@ -90,6 +125,8 @@ function serializePracticeWordCache(data: PracticeWordCache | null): PracticeWor
   if (!data) return null
   const { words, wrongWords, ...practiceDataRest } = data.practiceData
   return {
+    dictId: data.dictId,
+    practiceType: data.practiceType,
     taskWordsStr: {
       new: data.taskWords.new.map(v => v.word),
       review: data.taskWords.review.map(v => v.word),
@@ -127,6 +164,8 @@ function restorePracticeWordCache(data: PracticeWordCacheStored | null): Practic
     wrongWords,
   }
   return {
+    dictId: data.dictId,
+    practiceType: data.practiceType,
     taskWords,
     practiceData,
     statStoreData: data.statStoreData,
@@ -136,9 +175,14 @@ function restorePracticeWordCache(data: PracticeWordCacheStored | null): Practic
 export function usePracticeWordPersistence() {
   const dataSync = useDataSyncPersistence()
 
+  async function loadLocal(): Promise<PracticeWordCache | null> {
+    await wordLocalWriteQueue
+    return restorePracticeWordCache(await getPracticeWordCacheLocal())
+  }
+
   async function load(): Promise<PracticeWordCache | null> {
-    const res = await fetch()
-    return res ?? restorePracticeWordCache(await getPracticeWordCacheLocal())
+    const remote = await fetch()
+    return remote ?? (await loadLocal())
   }
 
   async function fetch(): Promise<PracticeWordCache | null> {
@@ -156,14 +200,34 @@ export function usePracticeWordPersistence() {
 
   async function save(data: PracticeWordCache | null) {
     const compactData = serializePracticeWordCache(data)
-    await dataSync.saveLocalAndSync(SyncDataType.practice_word, compactData)
+    wordLocalWriteQueue = wordLocalWriteQueue
+      .catch(error => console.warn('上一次单词练习本地保存失败', error))
+      .then(async () => {
+        const updatedAt = await dataSync.saveLocalOnly(SyncDataType.practice_word, compactData)
+        scheduleWordRemoteSync({
+          data: compactData,
+          updatedAt,
+          push: (snapshot, timestamp) => dataSync.pushSnapshotToRemote(SyncDataType.practice_word, snapshot, timestamp),
+        })
+      })
+    await wordLocalWriteQueue
   }
 
   async function clear() {
-    await dataSync.saveLocalAndSync(SyncDataType.practice_word, null, { pullWhenRemoteNewer: false })
+    wordLocalWriteQueue = wordLocalWriteQueue
+      .catch(error => console.warn('上一次单词练习本地保存失败', error))
+      .then(async () => {
+        const updatedAt = await dataSync.saveLocalOnly(SyncDataType.practice_word, null)
+        scheduleWordRemoteSync({
+          data: null,
+          updatedAt,
+          push: (snapshot, timestamp) => dataSync.pushSnapshotToRemote(SyncDataType.practice_word, snapshot, timestamp),
+        })
+      })
+    await wordLocalWriteQueue
   }
 
-  return { load, save, clear, fetch, getLocalDataCompact }
+  return { load, loadLocal, save, clear, fetch, getLocalDataCompact }
 }
 
 export function usePracticeArticlePersistence() {

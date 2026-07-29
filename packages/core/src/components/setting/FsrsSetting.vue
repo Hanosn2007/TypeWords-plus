@@ -17,7 +17,8 @@ const router = useRouter()
 
   <div class="line mt-4 mb-4"></div>
 
-  {{ $t('fsrs_limit_desc') }}
+  <h3 class="mt-4">逐字母阶段</h3>
+  <p>按错键次数进行评级。以下阈值只作用于设置为“逐字母”的阶段。</p>
 
   <SettingItem :title="$t('fsrs_easy_limit')">
     {{ $t('less_or_equals') }}
@@ -41,6 +42,9 @@ const router = useRouter()
     {{ $t('times') }}
     {{ $t('wrong') }}
   </SettingItem>
+
+  <h3 class="mt-4">整词输入阶段</h3>
+  <p>按完整作答结果评级：首次正确为 Good；首次错误后自行改正为 Hard；再次错误、查看答案或跳过为 Again。</p>
 
   <div class="line mt-4 mb-4"></div>
 

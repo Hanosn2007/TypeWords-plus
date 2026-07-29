@@ -312,6 +312,26 @@ export function getShortcutKey(e: KeyboardEvent) {
   return shortcutKey
 }
 
+export function emitConfiguredShortcutEvents(
+  e: KeyboardEvent,
+  shortcutKeyMap: Record<string, string>
+): ShortcutKey[] {
+  const shortcutKey = getShortcutKey(e)
+  const shortcutEvents: ShortcutKey[] = []
+
+  for (const [key, configuredShortcut] of Object.entries(shortcutKeyMap)) {
+    if (configuredShortcut !== shortcutKey) continue
+    if (!emitter.all.has(key) || !emitter.all.get(key)?.length) continue
+    shortcutEvents.push(key as ShortcutKey)
+  }
+
+  if (shortcutEvents.length) {
+    e.preventDefault()
+    shortcutEvents.forEach(key => emitter.emit(key, e))
+  }
+  return shortcutEvents
+}
+
 export function useStartKeyboardEventListener() {
   const settingStore = useSettingStore()
 
@@ -337,24 +357,8 @@ export function useStartKeyboardEventListener() {
         }
       }
 
-      let shortcutKey = getShortcutKey(e)
-      // console.log('shortcutKey', shortcutKey)
-
-      let shortcutEvent = []
-      for (let [k, v] of Object.entries(settingStore.shortcutKeyMap)) {
-        if (v === shortcutKey) {
-          // console.log('快捷键', k)
-          //必须是已监听的事件，才拦截并触发
-          //因为在自测时，才会监听 1234 四个键，平时如果也拦截会导致无法输入1234
-          if (emitter.all.has(k) && emitter.all.get(k)?.length) {
-            shortcutEvent.push(k)
-          }
-        }
-      }
-      if (shortcutEvent.length > 0) {
-        e.preventDefault()
-        shortcutEvent.map(s => emitter.emit(s, e))
-      } else {
+      const shortcutEvent = emitConfiguredShortcutEvents(e, settingStore.shortcutKeyMap)
+      if (!shortcutEvent.length) {
         //非英文模式下，输入区域的 keyCode 均为 229时，
         // 空格键始终应该被转发到onTyping函数，由它来决定是作为输入还是切换单词
         if (e.code === 'Space') {

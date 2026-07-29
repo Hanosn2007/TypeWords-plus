@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, provide, watch } from 'vue'
 import Statistics from '@typewords/core/components/word/Statistics.vue'
 import { emitter, EventKey, useEvents } from '@typewords/core/utils/eventBus.ts'
-import { useSettingStore } from '@typewords/core/stores/setting.ts'
+import { resolveWordInputMode, useSettingStore } from '@typewords/core/stores/setting.ts'
 import { useRuntimeStore } from '@typewords/core/stores/runtime.ts'
 import type { Dict, PracticeData, TaskWords, Word } from '@typewords/core/types/types.ts'
 import { useStartKeyboardEventListener } from '@typewords/core/hooks/event.ts'
@@ -14,7 +14,6 @@ import {
   _getDictDataByUrl,
   _nextTick,
   cloneDeep,
-  debounce,
   getShufflePracticeWords,
   isMobile,
   loadJsLib,
@@ -38,12 +37,12 @@ import { AppEnv, DICT_LIST, LIB_JS_URL, TourConfig, WordPracticeModeStageMap } f
 import { watchOnce } from '@vueuse/core'
 import { addStat, setUserDictProp } from '@typewords/core/apis'
 import GroupList from '@typewords/core/components/word/GroupList.vue'
-import { getPracticeWordCacheLocal } from '@typewords/core/utils/cache.ts'
 import { useDataSyncPersistence } from '@typewords/core/composables/useDataSyncPersistence.ts'
 import { flushStatToStore, usePracticeWordPersistence } from '@typewords/core/composables/usePracticePersistence.ts'
 import {
   IdentifyMethod,
   ShortcutKey,
+  WordInputMode,
   WordPracticeMode,
   WordPracticeStage,
   WordPracticeType,
@@ -61,6 +60,7 @@ const runtimeStore = useRuntimeStore()
 const { toggleTheme } = useTheme()
 const router = useRouter()
 const route = useRoute()
+const practiceDictId = String(route.params.id)
 const store = useBaseStore()
 const statStore = usePracticeStore()
 const dataSync = useDataSyncPersistence()
@@ -75,7 +75,6 @@ let isComplete = $ref(false)
 let loading = $ref(false)
 let settling = $ref(false)
 let timer = $ref<any>(-1)
-/** 仅用于 visibilitychange 内 fetch：与 `!document.hidden` 一致 */
 let isFocus = true
 const IDLE_MS = 3 * 60 * 1000
 let lastKeyActivity = Date.now()
@@ -147,7 +146,7 @@ function handleResumeTimer() {
 async function loadDict() {
   // console.log('load好了开始加载')
   let dict = getDefaultDict()
-  let dictId = route.params.id
+  let dictId = practiceDictId
   if (dictId) {
     //先在自己的词典列表里面找，如果没有再在资源列表里面找
     dict = store.word.bookList.find(v => v.id === dictId)
@@ -194,24 +193,13 @@ const onvisibilitychange = async () => {
     if (runtimeStore.globalLoading) return
     runtimeStore.globalLoading = true
     try {
-      //todo 这里如果另一台机器学完了，这里的d可能为空
-      const d = await wordPersistence.fetch()
-      if (d) {
-        taskWords = Object.assign(taskWords, d.taskWords)
-        data = Object.assign(data, d.practiceData)
-        statStore.$patch(d.statStoreData)
-        // 恢复缓存后，若计时状态为"未暂停"，需重新开启一个新片段
-        // 因为上次保存到现在有时间间隔，不能续在旧片段上
-        if (!statStore.timerPaused) {
-          const now = Date.now()
-          statStore.segments.push([now, now])
-        }
-      }
+      await savePracticeData('visibility-focus')
     } finally {
       runtimeStore.globalLoading = false
     }
   } else {
     statStore.pauseTimer('auto_visibility')
+    void savePracticeData('visibility-hidden')
   }
 }
 
@@ -234,9 +222,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onvisibilitychange)
-  if (getPracticeWordCacheLocal()) {
-    savePracticeDataIns('onUnmounted')
-  }
+  void savePracticeData('onUnmounted')
   timer && clearInterval(timer)
   watchRefList.map(v => v?.stop())
 })
@@ -285,6 +271,22 @@ watchOnce(
 let allWords: Word[] = []
 
 let isIniting = ref(true)
+let activePracticeType = $ref(settingStore.wordPracticeType)
+
+function setPracticeType(type: WordPracticeType) {
+  activePracticeType = type
+  settingStore.wordPracticeType = type
+}
+
+watch(
+  () => settingStore.wordPracticeType,
+  type => {
+    if (!isIniting.value && type !== activePracticeType) {
+      settingStore.wordPracticeType = activePracticeType
+    }
+  }
+)
+
 async function initData(initVal?: TaskWords, init: boolean = false) {
   isIniting.value = true
   //只有初始化时，才读取缓存（本地 + 可选 Supabase）
@@ -297,6 +299,10 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
       initData(getCurrentStudyWord())
       return
     }
+    if (d.dictId && d.dictId !== practiceDictId) {
+      initData(getCurrentStudyWord())
+      return
+    }
     if (!(d.practiceData && d.statStoreData)) {
       initData(d.taskWords)
       return
@@ -306,6 +312,10 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
     //这里直接赋值的话，provide后的inject获取不到最新值
     data = getDefaultPracticeData(data, d.practiceData)
     statStore.$patch(d.statStoreData)
+    if (d.practiceType !== undefined) {
+      setPracticeType(d.practiceType)
+      watchPracticeType(d.practiceType)
+    }
     // 恢复缓存后，若计时状态为"未暂停"，需重新开启一个新片段
     // 因为上次保存到现在有时间间隔，不能续在旧片段上
     if (!statStore.timerPaused) {
@@ -319,7 +329,7 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
     taskWords = Object.assign(taskWords, initVal)
 
     if (settingStore.wordPracticeMode === WordPracticeMode.Shuffle) {
-      settingStore.wordPracticeType = WordPracticeType.Dictation
+      setPracticeType(WordPracticeType.Dictation)
       data = getDefaultPracticeData(data, { words: taskWords.review })
       statStore.stage = WordPracticeStage.Shuffle
       statStore.total = taskWords.review.length
@@ -372,7 +382,7 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
   }
 
   // 初始化 Question
-  let dictId: any = route.params.id
+  let dictId: any = practiceDictId
   let d = store.word.bookList.find(v => v.id === dictId)
   if (!d) d = store.sdict
   if (!d?.id) return router.push('/words')
@@ -412,19 +422,19 @@ function watchStage(n: WordPracticeStage) {
     case WordPracticeStage.DictationNewWord:
     case WordPracticeStage.DictationReview:
     case WordPracticeStage.Shuffle:
-      settingStore.wordPracticeType = WordPracticeType.Dictation
+      setPracticeType(WordPracticeType.Dictation)
       break
     case WordPracticeStage.ListenNewWord:
     case WordPracticeStage.ListenReview:
-      settingStore.wordPracticeType = WordPracticeType.Listen
+      setPracticeType(WordPracticeType.Listen)
       break
     case WordPracticeStage.FollowWriteNewWord:
     case WordPracticeStage.FollowWriteReview:
-      settingStore.wordPracticeType = WordPracticeType.FollowWrite
+      setPracticeType(WordPracticeType.FollowWrite)
       break
     case WordPracticeStage.IdentifyNewWord:
     case WordPracticeStage.IdentifyReview:
-      settingStore.wordPracticeType = WordPracticeType.Identify
+      setPracticeType(WordPracticeType.Identify)
       break
   }
 }
@@ -460,7 +470,7 @@ function wordLoop() {
     data.index++
     // 到达一个组末尾，就切换到拼写模式
     if (data.index % groupSize === 0) {
-      settingStore.wordPracticeType = WordPracticeType.Spell
+      setPracticeType(WordPracticeType.Spell)
       data.index -= groupSize // 回到刚学单词开头
     }
   } else {
@@ -468,7 +478,7 @@ function wordLoop() {
     data.index++
     // 拼写走完一组，切回跟写模式
     if (data.index % groupSize === 0) {
-      settingStore.wordPracticeType = WordPracticeType.FollowWrite
+      setPracticeType(WordPracticeType.FollowWrite)
     }
   }
 }
@@ -589,7 +599,7 @@ function next(isTyping: boolean = true, ignoreLoop = false) {
       data.wrongWords = data.wrongWords.filter(v => !data.excludeWords.includes(v.word))
       if (data.wrongWords.length) {
         data.isTypingWrongWord = true
-        settingStore.wordPracticeType = WordPracticeType.FollowWrite
+        setPracticeType(WordPracticeType.FollowWrite)
         console.log('当前学完了，但还有错词')
         data.words = shuffle(cloneDeep(data.wrongWords))
         data.index = 0
@@ -611,7 +621,7 @@ function next(isTyping: boolean = true, ignoreLoop = false) {
             //回到最后一组的开始位置
             data.index = Math.floor(data.index / groupSize) * groupSize
             emitter.emit(EventKey.resetWord)
-            settingStore.wordPracticeType = WordPracticeType.Spell
+            setPracticeType(WordPracticeType.Spell)
             if (checkWordIsNeedNext(word)) next(false, ignoreLoop)
             return
           }
@@ -620,7 +630,7 @@ function next(isTyping: boolean = true, ignoreLoop = false) {
       data.wrongWords = data.wrongWords.filter(v => !checkWordIsNeedNext(v))
       if (data.wrongWords.length) {
         data.isTypingWrongWord = true
-        settingStore.wordPracticeType = WordPracticeType.FollowWrite
+        setPracticeType(WordPracticeType.FollowWrite)
         console.log('当前学完了，但还有错词')
         data.words = shuffle(cloneDeep(data.wrongWords))
         data.index = 0
@@ -704,8 +714,22 @@ function addExcludeWord() {
 
 function onWordKnow() {
   //"我认识“强制更新了Good，因为点”已掌握“才会设置Easy
-  data.ratingMap[word.word.toLowerCase()] = Rating.Good
+  if (
+    resolveWordInputMode(settingStore, statStore.stage, settingStore.wordPracticeType) === WordInputMode.Whole
+  ) {
+    onWordRating(Rating.Good)
+  } else {
+    data.ratingMap[word.word.toLowerCase()] = Rating.Good
+  }
   addExcludeWord()
+}
+
+function onWordRating(rating: Rating) {
+  const key = word.word.toLowerCase()
+  const current = data.ratingMap[key]
+  if (current === undefined || rating < current) {
+    data.ratingMap[key] = rating
+  }
 }
 
 function onTypeWrong() {
@@ -758,21 +782,24 @@ async function savePracticeDataIns(where?) {
   }
   if (isComplete) return
   // console.log('savePracticeData', where)
-  if (runtimeStore.globalLoading) return
-  runtimeStore.globalLoading = true
   // 若计时未暂停，将最后一条片段的 end 更新为当前时刻，确保保存内容最新
   if (!statStore.timerPaused && statStore.segments.length > 0) {
     statStore.segments[statStore.segments.length - 1][1] = Date.now()
   }
   await wordPersistence.save({
+    dictId: practiceDictId,
+    practiceType: activePracticeType,
     taskWords,
     practiceData: data,
     statStoreData: statStore.$state,
   })
-  runtimeStore.globalLoading = false
 }
 
-const savePracticeData = debounce(savePracticeDataIns, 500)
+function savePracticeData(where?: string) {
+  return savePracticeDataIns(where).catch(error => {
+    console.warn('练习进度保存失败', error)
+  })
+}
 
 function repeat() {
   console.log('重学一遍')
@@ -802,7 +829,23 @@ function prev() {
 }
 
 function skip() {
+  if (
+    resolveWordInputMode(settingStore, statStore.stage, settingStore.wordPracticeType) === WordInputMode.Whole
+  ) {
+    onWordRating(Rating.Again)
+  }
   addExcludeWord()
+  next(false)
+}
+
+function goToNextWord() {
+  if (
+    resolveWordInputMode(settingStore, statStore.stage, settingStore.wordPracticeType) ===
+      WordInputMode.Whole &&
+    !typingRef?.isWholeInputComplete?.()
+  ) {
+    onWordRating(Rating.Again)
+  }
   next(false)
 }
 
@@ -812,11 +855,9 @@ function show(e: KeyboardEvent) {
 
 function collect(e: KeyboardEvent) {
   const anchor = typingRef?.getCollectAnchor?.() as HTMLElement | null | undefined
-  openWordCollectPicker(
-    word,
-    anchor ?? { x: window.innerWidth / 2, y: window.innerHeight / 3 },
-    { excludeDictId: store.sdict.id ? String(store.sdict.id) : undefined }
-  )
+  openWordCollectPicker(word, anchor ?? { x: window.innerWidth / 2, y: window.innerHeight / 3 }, {
+    excludeDictId: store.sdict.id ? String(store.sdict.id) : undefined,
+  })
 }
 
 function play() {
@@ -913,10 +954,27 @@ useStartKeyboardEventListener()
 
 watch(isIniting, n => {
   if (!n) {
+    watchRefList.map(v => v?.stop())
     watchRefList = [
-      watch(() => statStore.stage, watchStage),
-      watch(() => settingStore.wordPracticeType, watchPracticeType),
-      watch(() => data.index, savePracticeData),
+      watch(
+        () => statStore.stage,
+        stage => {
+          if (isIniting.value) return
+          watchStage(stage)
+          void savePracticeData('stage')
+        }
+      ),
+      watch(
+        () => activePracticeType,
+        practiceType => {
+          watchPracticeType(practiceType)
+          void savePracticeData('practice-type')
+        }
+      ),
+      watch(
+        () => data.index,
+        () => void savePracticeData('word-index')
+      ),
       // 监听 statStore.spend，每过10秒自动保存数据
       watch(
         () => statStore.spend,
@@ -941,7 +999,7 @@ function onWordMarkPickComplete(result: WordMarkPickResult) {
   console.log(result)
   if (result.unknown.length > 0) {
     data.isTypingWrongWord = true
-    settingStore.wordPracticeType = WordPracticeType.FollowWrite
+    setPracticeType(WordPracticeType.FollowWrite)
     console.log('当前学完了，但还有错词')
     data.words = shuffle(cloneDeep(result.unknown))
     data.index = 0
@@ -964,7 +1022,7 @@ useEvents([
   //当默写时，执行 show 会标记为错误，并更新卡片
   [ShortcutKey.ShowWord, throttle(show, 300)],
   [ShortcutKey.Previous, prev],
-  [ShortcutKey.Next, throttle(() => next(false), 300)],
+  [ShortcutKey.Next, throttle(goToNextWord, 300)],
   [ShortcutKey.Ignore, throttle(skip, 300)],
   [ShortcutKey.ToggleCollect, collect],
   [ShortcutKey.ToggleSimple, toggleWordSimpleWrapper],
@@ -1032,7 +1090,7 @@ useEvents([
             </div>
 
             <Tooltip :title="`下一个(${settingStore.shortcutKeyMap[ShortcutKey.Next]})`">
-              <div class="relative center gap-2 cp float-right mr-3" @click="next(false)" v-if="nextWord">
+              <div class="relative center gap-2 cp float-right mr-3" @click="goToNextWord" v-if="nextWord">
                 <div class="word" :class="settingStore.dictation && 'word-shadow'">
                   {{ nextWord.word }}
                 </div>
@@ -1044,7 +1102,9 @@ useEvents([
             ref="typingRef"
             :word="word"
             :question="data.question"
+            :initial-wrong-times="data.wrongTimes"
             @wrong="onTypeWrong"
+            @rating="onWordRating"
             @complete="next"
             @mastered="toggleWordSimpleWrapper"
             @know="onWordKnow"

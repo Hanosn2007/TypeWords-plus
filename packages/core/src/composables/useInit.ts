@@ -3,6 +3,7 @@ import { debounce } from '../utils'
 import { syncSetting } from '../apis'
 import { BaseState, SettingState, useBaseStore, useRuntimeStore, useSettingStore, useUserStore } from '../stores'
 import { Supabase } from '../utils/supabase'
+import { CloudSync } from '../utils/cloudSync'
 import { ensureHashGuardBeforeInit, useDataSyncPersistence } from './useDataSyncPersistence'
 import { SyncDataType } from '../types'
 import { SubscriptionCallbackMutation } from 'pinia'
@@ -108,7 +109,7 @@ export function useInit() {
         }
         fetching2 = true
         try {
-          await dataSync.saveLocalAndSync(SyncDataType.setting, data)
+          await dataSync.saveLocalAndSync(SyncDataType.setting, data, { pullWhenRemoteNewer: false })
         } finally {
           fetching2 = false
         }
@@ -120,7 +121,7 @@ export function useInit() {
 
     runtimeStore.isNew = APP_VERSION.version > Number(settingStore.webAppVersion)
     // runtimeStore.isNew = true
-    runtimeStore.isError = Supabase.getStatus().status === 'error'
+    runtimeStore.isError = (CloudSync.check() ? CloudSync.getStatus() : Supabase.getStatus()).status === 'error'
     window.umami?.track('host', { host: window.location.host })
 
     // 静默后台录制用户操作，数据保存到 IndexedDB

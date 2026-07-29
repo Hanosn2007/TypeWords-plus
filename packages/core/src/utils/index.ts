@@ -1,5 +1,11 @@
 import type { BaseState, SettingState } from '../stores'
-import { getDefaultBaseState, getDefaultSettingState, useBaseStore, useRuntimeStore } from '../stores'
+import {
+  getDefaultBaseState,
+  getDefaultSettingState,
+  getDefaultWordInputModeByStage,
+  useBaseStore,
+  useRuntimeStore,
+} from '../stores'
 import {
   CompareResult,
   Dict,
@@ -10,6 +16,9 @@ import {
   IdentifyMethod,
   SaveData,
   ShortcutKey,
+  WordInputMode,
+  WordInputStage,
+  WordPracticeStage,
 } from '../types'
 import { useRouter } from 'vue-router'
 //@ts-ignore
@@ -217,6 +226,33 @@ export async function checkAndUpgradeSaveSetting(val: any) {
       if (version <= 21) {
         //如果用户之前是快速自测
         if (state.quickIdentify) state.identifyMethod = IdentifyMethod.QuickIdentify
+        updateLocalData = true
+      }
+
+      if (version <= 23 && !state.wordInputModeByStage) {
+        const previousMode = state.wordInputMode ?? WordInputMode.Classic
+        state.wordInputModeByStage = getDefaultWordInputModeByStage(previousMode)
+        if (previousMode === WordInputMode.Whole) {
+          state.wordInputModeByStage[WordPracticeStage.FollowWriteNewWord] = WordInputMode.Classic
+          state.wordInputModeByStage[WordPracticeStage.FollowWriteReview] = WordInputMode.Classic
+        }
+        updateLocalData = true
+      }
+
+      if (version <= 24) {
+        const oldModes = state.wordInputModeByStage ?? {}
+        const fallback = state.wordInputMode ?? WordInputMode.Classic
+        state.wordInputModeByStage = {
+          [WordInputStage.FollowWriteNewVisible]: oldModes[WordPracticeStage.FollowWriteNewWord] ?? fallback,
+          [WordInputStage.FollowWriteNewMasked]: WordInputMode.Whole,
+          [WordInputStage.ListenNew]: oldModes[WordPracticeStage.ListenNewWord] ?? fallback,
+          [WordInputStage.DictationNew]: oldModes[WordPracticeStage.DictationNewWord] ?? fallback,
+          [WordInputStage.FollowWriteReviewVisible]: oldModes[WordPracticeStage.FollowWriteReview] ?? fallback,
+          [WordInputStage.FollowWriteReviewMasked]: WordInputMode.Whole,
+          [WordInputStage.ListenReview]: oldModes[WordPracticeStage.ListenReview] ?? fallback,
+          [WordInputStage.DictationReview]: oldModes[WordPracticeStage.DictationReview] ?? fallback,
+          [WordInputStage.Shuffle]: oldModes[WordPracticeStage.Shuffle] ?? fallback,
+        }
         updateLocalData = true
       }
 
@@ -693,7 +729,9 @@ export function isSameDictResource(a?: DictIdentity | null, b?: DictIdentity | n
 
 /** @deprecated 优先使用 dict.system 字段判断，仅作兼容 fallback */
 export function isBuiltinDictId(id: unknown): boolean {
-  return [DictId.wordKnown, DictId.wordWrong, DictId.wordCollect, DictId.articleCollect].includes(normalizeDictId(id) as any)
+  return [DictId.wordKnown, DictId.wordWrong, DictId.wordCollect, DictId.articleCollect].includes(
+    normalizeDictId(id) as any
+  )
 }
 
 export function ensureCustomDictCopy(dict: Dict): Dict {

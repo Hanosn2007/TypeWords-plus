@@ -1,4 +1,4 @@
-import type { PracticeData, TaskWords } from '../types'
+import type { PracticeData, TaskWords, WordPracticeType } from '../types'
 import type { PracticeState } from '../stores'
 import { get, set } from 'idb-keyval'
 
@@ -14,6 +14,8 @@ export const PRACTICE_ARTICLE_CACHE: CacheConfig = {
 }
 
 export type PracticeWordCache = {
+  dictId?: string
+  practiceType?: WordPracticeType
   taskWords: TaskWords
   practiceData?: PracticeData
   statStoreData?: PracticeState
@@ -30,6 +32,8 @@ export type PracticeWordDataCompact = Omit<PracticeData, 'words' | 'wrongWords'>
 }
 
 export type PracticeWordCacheCompact = {
+  dictId?: string
+  practiceType?: WordPracticeType
   taskWordsStr: PracticeWordTaskWordsStr
   practiceData: PracticeWordDataCompact
   statStoreData: PracticeState

@@ -3,8 +3,76 @@ import { checkAndUpgradeSaveDict, checkAndUpgradeSaveSetting, cloneDeep, parseJs
 import { get, set } from 'idb-keyval'
 import { APP_VERSION, AppEnv, DefaultShortcutKeyMap, SAVE_SETTING_KEY } from '../config/env'
 import { getSetting } from '../apis'
-import { IdentifyMethod, type SaveData, WordPracticeMode, WordPracticeType } from '../types'
+import {
+  IdentifyMethod,
+  type SaveData,
+  WholeInputSubmitMode,
+  WordInputMode,
+  WordInputStage,
+  WordPracticeMode,
+  WordPracticeStage,
+  WordPracticeType,
+} from '../types'
 import type { FSRSParameters } from 'ts-fsrs'
+
+export type WordInputModeByStage = Partial<Record<WordInputStage, WordInputMode>>
+
+export function getDefaultWordInputModeByStage(mode = WordInputMode.Classic): WordInputModeByStage {
+  return {
+    [WordInputStage.FollowWriteNewVisible]: mode,
+    [WordInputStage.FollowWriteNewMasked]: WordInputMode.Whole,
+    [WordInputStage.ListenNew]: WordInputMode.Whole,
+    [WordInputStage.DictationNew]: WordInputMode.Whole,
+    [WordInputStage.FollowWriteReviewVisible]: mode,
+    [WordInputStage.FollowWriteReviewMasked]: WordInputMode.Whole,
+    [WordInputStage.ListenReview]: WordInputMode.Whole,
+    [WordInputStage.DictationReview]: WordInputMode.Whole,
+    [WordInputStage.Shuffle]: WordInputMode.Whole,
+  }
+}
+
+export function resolveWordInputStage(
+  stage: WordPracticeStage,
+  practiceType: WordPracticeType
+): WordInputStage | null {
+  if (stage === WordPracticeStage.Shuffle) return WordInputStage.Shuffle
+
+  const isReviewStage = [
+    WordPracticeStage.FollowWriteReview,
+    WordPracticeStage.IdentifyReview,
+    WordPracticeStage.ListenReview,
+    WordPracticeStage.DictationReview,
+  ].includes(stage)
+  const isNewStage = [
+    WordPracticeStage.FollowWriteNewWord,
+    WordPracticeStage.IdentifyNewWord,
+    WordPracticeStage.ListenNewWord,
+    WordPracticeStage.DictationNewWord,
+  ].includes(stage)
+  if (!isNewStage && !isReviewStage) return null
+
+  switch (practiceType) {
+    case WordPracticeType.FollowWrite:
+      return isReviewStage ? WordInputStage.FollowWriteReviewVisible : WordInputStage.FollowWriteNewVisible
+    case WordPracticeType.Spell:
+      return isReviewStage ? WordInputStage.FollowWriteReviewMasked : WordInputStage.FollowWriteNewMasked
+    case WordPracticeType.Listen:
+      return isReviewStage ? WordInputStage.ListenReview : WordInputStage.ListenNew
+    case WordPracticeType.Dictation:
+      return isReviewStage ? WordInputStage.DictationReview : WordInputStage.DictationNew
+    default:
+      return null
+  }
+}
+
+export function resolveWordInputMode(
+  setting: Pick<SettingState, 'wordInputMode' | 'wordInputModeByStage'>,
+  stage: WordPracticeStage,
+  practiceType: WordPracticeType
+): WordInputMode {
+  const inputStage = resolveWordInputStage(stage, practiceType)
+  return (inputStage && setting.wordInputModeByStage?.[inputStage]) ?? setting.wordInputMode
+}
 
 export interface SettingState {
   soundType: string
@@ -60,6 +128,9 @@ export interface SettingState {
   wordPracticeType: WordPracticeType // 单词练习类型
   autoNextWord: boolean // 自动切换下一个单词
   inputWrongClear: boolean // 单词输入错误，清空已输入内容
+  wordInputMode: WordInputMode // 旧版全局输入方案，作为阶段配置的兼容回退
+  wordInputModeByStage: WordInputModeByStage // 各练习阶段的输入方案
+  wholeInputSubmitMode: WholeInputSubmitMode // 整词输入的判定时机
   mobileNavCollapsed: boolean // 移动端底部导航栏收缩状态
   ignoreSymbol: boolean // 过滤符号
   practiceSentence: boolean // 练习例句
@@ -73,7 +144,7 @@ export interface SettingState {
   identifyMethod: IdentifyMethod
   _ignoreWatch: boolean //忽略监听，避免重复保存和上传
   ttsVoiceMap: { key: string; voice: string }[] // 浏览器 TTS 声色映射，key 为 OS+浏览器组合（如 mac+chrome）
-  showEtymologyAndRelWords:boolean // 显示词源和相关词
+  showEtymologyAndRelWords: boolean // 显示词源和相关词
 }
 
 export const getDefaultSettingState = (): SettingState => ({
@@ -130,6 +201,9 @@ export const getDefaultSettingState = (): SettingState => ({
   wordPracticeType: WordPracticeType.FollowWrite,
   autoNextWord: true,
   inputWrongClear: false,
+  wordInputMode: WordInputMode.Classic,
+  wordInputModeByStage: getDefaultWordInputModeByStage(),
+  wholeInputSubmitMode: WholeInputSubmitMode.Enter,
   mobileNavCollapsed: false,
   ignoreSymbol: true,
   practiceSentence: false,

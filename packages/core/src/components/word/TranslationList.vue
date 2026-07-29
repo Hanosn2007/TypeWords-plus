@@ -62,11 +62,8 @@ onMounted(() => {
   <div>
     <div class="flex gap-3 flex-wrap items-end">
       <span v-for="tran in noposTrans">
-        <span v-if="tran.frequency != undefined" :class="['rare', 'uncommon', 'common'][tran.frequency]">
-          {{ tran.cn }}
-        </span>
         <SentenceHightLightWord
-          v-else
+          :class="tran.frequency != undefined ? ['rare', 'uncommon', 'common'][tran.frequency] : undefined"
           :text="tran.cn"
           :word="word.word"
           :dictation="!props.showFull"
@@ -78,11 +75,8 @@ onMounted(() => {
       <div class="shrink-0 pos" :class="posSpace && 'min-w-12'">{{ pos.pos }}&nbsp;</div>
       <div class="flex gap-3 flex-wrap items-end">
         <span v-for="tran in pos.trans">
-          <span v-if="tran.frequency != undefined" :class="['rare', 'uncommon', 'common'][tran.frequency]">
-            {{ tran.cn }}
-          </span>
           <SentenceHightLightWord
-            v-else
+            :class="tran.frequency != undefined ? ['rare', 'uncommon', 'common'][tran.frequency] : undefined"
             :text="tran.cn"
             :word="word.word"
             :dictation="!props.showFull"

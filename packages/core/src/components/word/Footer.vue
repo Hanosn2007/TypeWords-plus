@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { usePracticeStore } from '../../stores/practice'
-import { useSettingStore } from '../../stores/setting'
+import { resolveWordInputStage, useSettingStore } from '../../stores/setting'
 import type { PracticeData } from '../../types'
-import { ShortcutKey, WordPracticeMode, WordPracticeStage } from '../../types'
+import { ShortcutKey, WordInputMode, WordPracticeMode, WordPracticeStage, WordPracticeType } from '../../types'
 import { BaseIcon, Tooltip } from '@typewords/base'
 import SettingDialog from '../setting/SettingDialog.vue'
 import VolumeSettingMiniDialog from './VolumeSettingMiniDialog.vue'
 import StageProgress from '../StageProgress.vue'
 import { WordPracticeModeNameMap, WordPracticeStageNameMap } from '../../config/env'
 import { useI18n } from 'vue-i18n'
+import WordInputModeSegment from './WordInputModeSegment.vue'
 
 const statStore = usePracticeStore()
 const settingStore = useSettingStore()
@@ -44,6 +45,42 @@ const status = $computed(() => {
   if (practiceData.isTypingWrongWord) return $t('review_wrong_words')
   return statStore.getStageName
 })
+
+const currentInputStage = computed(() => resolveWordInputStage(statStore.stage, settingStore.wordPracticeType))
+const showInputModeControl = computed(() => {
+  const supportsTypedInput = [
+    WordPracticeType.FollowWrite,
+    WordPracticeType.Spell,
+    WordPracticeType.Listen,
+    WordPracticeType.Dictation,
+  ].includes(settingStore.wordPracticeType)
+  return currentInputStage.value !== null && supportsTypedInput
+})
+const currentInputMode = computed(
+  () =>
+    (currentInputStage.value && settingStore.wordInputModeByStage[currentInputStage.value]) ??
+    settingStore.wordInputMode
+)
+const currentInputModeLabel = computed(() => {
+  switch (settingStore.wordPracticeType) {
+    case WordPracticeType.Spell:
+      return '遮罩拼写'
+    case WordPracticeType.Listen:
+      return '听写'
+    case WordPracticeType.Dictation:
+      return '默写'
+    default:
+      return '跟写'
+  }
+})
+
+function setCurrentInputMode(mode: WordInputMode) {
+  if (!currentInputStage.value) return
+  settingStore.wordInputModeByStage = {
+    ...settingStore.wordInputModeByStage,
+    [currentInputStage.value]: mode,
+  }
+}
 
 const stages = $computed(() => {
   let DEFAULT_BAR = {
@@ -207,7 +244,7 @@ const stages = $computed(() => {
     <div class="bottom">
       <StageProgress :stages="stages" />
 
-      <div class="flex justify-between items-center">
+      <div class="footer-main-row">
         <div class="stat">
           <div class="row">
             <Tooltip title="进度 / 单词数">
@@ -237,16 +274,26 @@ const stages = $computed(() => {
             <div class="name">{{ $t('total_words') }}</div>
           </div>
           <div class="row">
-            <Tooltip title="当前错误数 | 总错误数">
+            <Tooltip title="当前需重练错词 | 本轮累计错词">
               <div class="num">
                 {{ format(practiceData.wrongWords.length, '', 0) }} | {{ format(statStore.wrong, '', 0) }}
               </div>
             </Tooltip>
             <div class="line"></div>
-            <div class="name">{{ $t('errors') }}</div>
+            <div class="name">错词数</div>
           </div>
         </div>
         <div class="flex gap-2 justify-center items-center" id="toolbar-icons">
+          <div v-if="showInputModeControl" class="current-input-mode">
+            <span>{{ currentInputModeLabel }}</span>
+            <WordInputModeSegment
+              compact
+              :model-value="currentInputMode"
+              :aria-label="`${currentInputModeLabel}输入方式`"
+              @update:model-value="setCurrentInputMode"
+            />
+          </div>
+
           <SettingDialog type="word" />
 
           <VolumeSettingMiniDialog />
@@ -331,6 +378,23 @@ const stages = $computed(() => {
         }
       }
     }
+
+    .footer-main-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .current-input-mode {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      margin-right: 0.25rem;
+      color: var(--color-font-3);
+      font-size: 0.75rem;
+      white-space: nowrap;
+    }
   }
 
   .progress-wrap {
@@ -390,8 +454,23 @@ const stages = $computed(() => {
         }
       }
 
+      .footer-main-row {
+        align-items: flex-end;
+        gap: 0.5rem;
+      }
+
+      .current-input-mode {
+        grid-column: 1 / -1;
+        justify-content: flex-end;
+        margin: 0 0 0.1rem;
+
+        > span {
+          display: none;
+        }
+      }
+
       // 移动端按钮组调整 - 改为网格布局
-      .flex.gap-2 {
+      #toolbar-icons {
         display: grid;
         grid-template-columns: repeat(3, 1fr);
         gap: 0.4rem;

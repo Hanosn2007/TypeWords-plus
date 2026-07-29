@@ -89,11 +89,7 @@ onMounted(() => {
         <NuxtLink to="/setting" class="row">
           <IconFluentSettings20Regular />
           <span>{{ $t('setting') }}</span>
-          <div
-            class="red-point"
-            :class="!settingStore.sideExpand && 'top-1 right-0'"
-            v-if="runtimeStore.isError"
-          ></div>
+          <div class="red-point" :class="!settingStore.sideExpand && 'top-1 right-0'" v-if="runtimeStore.isError"></div>
         </NuxtLink>
         <NuxtLink to="/feedback" class="row">
           <IconFluentCommentEdit20Regular />
@@ -107,10 +103,10 @@ onMounted(() => {
           <IconFluentQuestionCircle20Regular />
           <span>{{ $t('help') }}</span>
         </NuxtLink>
-        <!--        <div class="row" @click="router.push('/user')">-->
-        <!--          <IconFluentPerson20Regular/>-->
-        <!--          <span >用户</span>-->
-        <!--        </div>-->
+        <NuxtLink to="/cloud-login" class="row">
+          <IconFluentCloudSync20Regular />
+          <span>同步</span>
+        </NuxtLink>
       </div>
       <div class="bottom flex justify-evenly">
         <BaseIcon @click="settingStore.sideExpand = !settingStore.sideExpand">
@@ -140,6 +136,10 @@ onMounted(() => {
           <span>{{ $t('setting') }}</span>
           <div class="red-point" v-if="runtimeStore.isError"></div>
         </div>
+        <div class="nav-item" @click="router.push('/cloud-login')" :class="{ active: route.path === '/cloud-login' }">
+          <IconFluentCloudSync20Regular />
+          <span>同步</span>
+        </div>
       </div>
       <div class="nav-toggle" @click="settingStore.mobileNavCollapsed = !settingStore.mobileNavCollapsed">
         <IconFluentChevronDown20Filled v-if="!settingStore.mobileNavCollapsed" />
@@ -157,7 +157,13 @@ onMounted(() => {
         @click="router.push('/setting?index=6 ')"
         v-if="runtimeStore.isError"
       >
-        <ToastComponent type="error" :duration="0" :shadow="false" :showClose="false" :message="$t('sync_failed_toast')" />
+        <ToastComponent
+          type="error"
+          :duration="0"
+          :shadow="false"
+          :showClose="false"
+          :message="$t('sync_failed_toast')"
+        />
       </div>
       <!--      <slot></slot>-->
       <router-view></router-view>

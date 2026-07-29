@@ -96,6 +96,29 @@ export enum WordPracticeType {
   Dictation,
 }
 
+export enum WordInputMode {
+  Classic = 'classic',
+  Whole = 'whole',
+}
+
+// 输入方式按实际输入微阶段保存，避免同一练习阶段中的跟写和遮罩拼写互相覆盖。
+export enum WordInputStage {
+  FollowWriteNewVisible = 'follow-write-new-visible',
+  FollowWriteNewMasked = 'follow-write-new-masked',
+  ListenNew = 'listen-new',
+  DictationNew = 'dictation-new',
+  FollowWriteReviewVisible = 'follow-write-review-visible',
+  FollowWriteReviewMasked = 'follow-write-review-masked',
+  ListenReview = 'listen-review',
+  DictationReview = 'dictation-review',
+  Shuffle = 'shuffle',
+}
+
+export enum WholeInputSubmitMode {
+  Auto = 'auto',
+  Enter = 'enter',
+}
+
 export enum CodeType {
   Login = 0,
   Register = 1,

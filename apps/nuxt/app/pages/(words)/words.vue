@@ -182,19 +182,20 @@ async function init() {
     }
   }
 
-  if (!practiceData?.taskWords.new.length && store.sdict.words.length) {
-    const d = await wordPersistence.load()
+  if (store.sdict.words.length) {
+    const d = await wordPersistence.loadLocal()
     if (d) {
       practiceData = d
       isSaveData = true
     } else {
       practiceData.taskWords = getCurrentStudyWord()
+      isSaveData = false
     }
   }
   loading = false
 }
 
-async function startPractice(practiceMode: WordPracticeMode, resetCache: boolean = false): void {
+async function startPractice(practiceMode: WordPracticeMode, resetCache: boolean = false): Promise<void> {
   if (resetCache) await resetCacheData()
 
   if (shouldShowDialogPracticeMode.includes(practiceMode) && !isSaveData) {
@@ -204,6 +205,10 @@ async function startPractice(practiceMode: WordPracticeMode, resetCache: boolean
   }
 
   if (store.sdict.id) {
+    if (!resetCache && isSaveData) {
+      const latest = await wordPersistence.loadLocal()
+      if (latest) practiceData = latest
+    }
     if (!store.sdict.words.length) {
       Toast.warning('没有单词可学习！')
       return
