@@ -14,7 +14,7 @@ let type = $ref('today')
 
 // 将 fsrsData 转换为数组
 const fsrsList = computed(() => {
-  return Object.entries(baseStore.fsrsData)
+  return Object.entries(baseStore.currentFsrsData)
     .filter(([word, card]) => {
       return type === 'today' ? dayjs.utc(card.last_review).local().isToday() : true
     })

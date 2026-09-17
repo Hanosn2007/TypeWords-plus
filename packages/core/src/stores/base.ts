@@ -1,12 +1,21 @@
 import { defineStore } from 'pinia'
-import { Dict, getDefaultDict, SaveData, Word } from '../types'
+import { Dict, getDefaultDict, SaveData } from '../types'
 import { _getStudyProgress, checkAndUpgradeSaveDict, isSameDictResource, parseJsonStr } from '../utils'
 import { shallowReactive } from 'vue'
 import { get } from 'idb-keyval'
 import { AppEnv, DictId, IS_DEV, SAVE_DICT_KEY } from '../config/env'
 import { add2MyDict, dictListVersion, myDictList } from '../apis'
 import { Toast } from '@typewords/base'
+import { applyLoadedLibraryBook } from '../utils/libraryContent'
+import { useSettingStore } from './setting'
 import type { Card } from 'ts-fsrs'
+import {
+  getBookLearning,
+  getUnitProgress,
+  migrateLegacyFsrsToBookLearning,
+  migrateLegacyMasteryToBookLearning,
+  normalizeLearningWord,
+} from '../utils/bookLearning'
 
 export interface BaseState {
   simpleWords: string[]
@@ -21,6 +30,8 @@ export interface BaseState {
   }
   dictListVersion: number
   fsrsData: Record<string, Card>
+  /** 旧全局已掌握词只迁移一次到首次实际加载的当前词书。 */
+  legacyBookLearningMasteryMigrationVersion: number
   noteData: Record<string, string> // 集中存储单词笔记，key 为单词字符串
   _ignoreWatch: boolean //忽略监听，避免重复保存和上传
 }
@@ -91,6 +102,7 @@ export const getDefaultBaseState = (): BaseState => ({
   },
   dictListVersion: 1,
   fsrsData: {},
+  legacyBookLearningMasteryMigrationVersion: 1,
   noteData: {},
   _ignoreWatch: false,
 })
@@ -117,18 +129,19 @@ export const useBaseStore = defineStore('base', {
       return res ?? getDefaultDict()
     },
     knownWords(): string[] {
-      return this.known.words.map((v: Word) => v.word.toLowerCase())
+      return getBookLearning(this.sdict).masteredWords
     },
     allIgnoreWords(): string[] {
-      return this.known.words
-        .map((v: Word) => v.word.toLowerCase())
-        .concat(this.simpleWords.map((v: string) => v.toLowerCase()))
+      return this.knownWords.concat(this.simpleWords.map((v: string) => normalizeLearningWord(v)))
     },
     knownWordsSet(): Set<string> {
-      return new Set<string>(this.known.words.map((v: Word) => v.word))
+      return new Set<string>(this.knownWords)
     },
     allIgnoreWordsSet(): Set<string> {
-      return new Set<string>(this.known.words.map((v: Word) => v.word).concat(this.simpleWords.map((v: string) => v)))
+      return new Set<string>(this.knownWords.concat(this.simpleWords.map((v: string) => normalizeLearningWord(v))))
+    },
+    currentFsrsData(): Record<string, Card> {
+      return getBookLearning(this.sdict).fsrs
     },
     sdict(): Dict {
       if (this.word.studyIndex >= 0) {
@@ -147,7 +160,16 @@ export const useBaseStore = defineStore('base', {
     },
     currentStudyProgress(): number {
       if (!this.sdict.length) return 0
+      if (this.sdict.units?.length) {
+        const progress = getUnitProgress(this.sdict, '', useSettingStore().ignoreSimpleWord ? this.allIgnoreWordsSet : this.knownWordsSet)
+        return progress.total ? Math.round(progress.handled / progress.total * 100) : 0
+      }
       return _getStudyProgress(this.sdict.lastLearnIndex, this.sdict.length)
+    },
+    currentStudyHandledCount(): number {
+      return this.sdict.units?.length
+        ? getUnitProgress(this.sdict, '', useSettingStore().ignoreSimpleWord ? this.allIgnoreWordsSet : this.knownWordsSet).handled
+        : this.sdict.lastLearnIndex
     },
     getDictCompleteDate(): number {
       if (!this.sdict.length) return 0
@@ -220,7 +242,7 @@ export const useBaseStore = defineStore('base', {
     },
     //改变词典
     async changeDict(val: Dict) {
-      if (AppEnv.CAN_REQUEST) {
+      if (AppEnv.CAN_REQUEST && !val.library) {
         let r = await add2MyDict({
           id: val.id,
           perDayStudyNumber: val.perDayStudyNumber,
@@ -232,7 +254,9 @@ export const useBaseStore = defineStore('base', {
       }
       //把其他的词典的单词数据都删掉，全保存在内存里太卡了
       this.word.bookList.slice(3).map(v => {
-        if (!v.custom) {
+        // `val` is frequently the same reactive entry; do not clear its freshly
+        // loaded words before assigning it to the selected book.
+        if (!v.custom && !isSameDictResource(v, val)) {
           v.words = shallowReactive([])
         }
       })
@@ -249,7 +273,12 @@ export const useBaseStore = defineStore('base', {
       }
       if (rIndex > -1) {
         this.word.studyIndex = rIndex
+        if (val.library) {
+          Object.assign(this.word.bookList[rIndex], applyLoadedLibraryBook(this.word.bookList[rIndex], val))
+          return
+        }
         this.word.bookList[this.word.studyIndex].words = shallowReactive(val.words)
+        this.word.bookList[this.word.studyIndex].units = val.units
         this.word.bookList[this.word.studyIndex].id = val.id
         this.word.bookList[this.word.studyIndex].enName = val.enName
         this.word.bookList[this.word.studyIndex].length = val.length
@@ -261,6 +290,15 @@ export const useBaseStore = defineStore('base', {
         this.word.bookList.push(getDefaultDict(val))
         this.word.studyIndex = this.word.bookList.length - 1
       }
+      const currentDict = this.word.bookList[this.word.studyIndex]
+      if (this.legacyBookLearningMasteryMigrationVersion < 1) {
+        const migrated = migrateLegacyMasteryToBookLearning(
+          currentDict,
+          this.known.words.map(word => word.word)
+        )
+        if (migrated) this.legacyBookLearningMasteryMigrationVersion = 1
+      }
+      migrateLegacyFsrsToBookLearning(currentDict, this.fsrsData)
     },
     //改变书籍
     async changeBook(val: Dict) {

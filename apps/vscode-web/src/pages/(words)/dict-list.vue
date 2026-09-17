@@ -10,7 +10,7 @@ import { useBaseStore } from '@typewords/core/stores/base.ts'
 import { useRouter } from 'vue-router'
 import { computed, watch } from 'vue'
 import { getDefaultDict } from '@typewords/core/types/func.ts'
-import { useFetch } from '@vueuse/core'
+import { useWordCatalog } from '@typewords/core/composables/useWordCatalog.ts'
 import { DICT_LIST, LIB_JS_URL, TourConfig } from '@typewords/core/config/env.ts'
 import { BaseInput } from '@typewords/base'
 import { useSettingStore } from '@typewords/core/stores/setting.ts'
@@ -27,7 +27,7 @@ function selectDict(e) {
 }
 
 async function getDictDetail(val: DictResource) {
-  runtimeStore.editDict = getDefaultDict(val)
+  runtimeStore.editDict = getDefaultDict(store.word.bookList.find(book => String(book.id) === String(val.id)) ?? val)
   nav('/dict', { from: 'list' })
 }
 
@@ -44,7 +44,7 @@ function groupByDictTags(dictList: DictResource[]) {
   }, {})
 }
 
-const { data: dict_list, isFetching } = useFetch(resourceWrap(DICT_LIST.WORD.ALL)).json()
+const { data: dict_list, isFetching } = useWordCatalog()
 
 const groupedByCategoryAndTag = $computed(() => {
   let data = []
@@ -53,7 +53,6 @@ const groupedByCategoryAndTag = $computed(() => {
   for (const [key, value] of Object.entries(groupByCategory)) {
     data.push([key, groupByDictTags(value)])
   }
-  ;[data[2], data[3]] = [data[3], data[2]]
   // console.log('data', data)
   return data
 })
@@ -66,7 +65,7 @@ const searchList = computed<any[]>(() => {
     let s = searchKey.toLowerCase()
     return dict_list.value.filter(item => {
       return (
-        item.id.toLowerCase().includes(s) ||
+        String(item.id).toLowerCase().includes(s) ||
         item.name.toLowerCase().includes(s) ||
         item.category.toLowerCase().includes(s) ||
         item.tags.join('').replace('所有', '').toLowerCase().includes(s) ||

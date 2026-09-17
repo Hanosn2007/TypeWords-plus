@@ -1,5 +1,5 @@
-import { DictType, Frequency, PracticeArticleWordType } from './enum'
-import type { Rating } from 'ts-fsrs'
+import { DictType, Frequency, PracticeArticleWordType, WordPracticeMode } from './enum'
+import type { Card, Rating } from 'ts-fsrs'
 import { PRACTICE_ARTICLE_CACHE, PRACTICE_WORD_CACHE } from '../utils/cache'
 import { APP_VERSION } from '../config/env'
 
@@ -99,6 +99,8 @@ export interface Statistics {
   new: number //新学单词数量
   review: number //复习单词数量
   wrong: number //错误数
+  /** 本次主动跳过的词数（老记录缺失时按 0 处理） */
+  skipped?: number
   title?: string //文章标题
   /** 本日实际学习的时间片段列表，每项为 [startMs, endMs] */
   segments?: [number, number][]
@@ -114,6 +116,8 @@ export interface Statistics {
 
 export type DictResource = {
   id: string | number
+  /** Immutable shared-library release; independent of a private copy's sourceId. */
+  library?: { bookId: string; version: number }
   enName?: string
   name: string
   description: string
@@ -128,6 +132,13 @@ export type DictResource = {
   language: LanguageType
 }
 
+/** 单元成员按词条保存，避免缺词、补词或调序改变所属单元。 */
+export interface BookUnit {
+  id: string
+  name: string
+  words: string[]
+}
+
 export interface Dict extends DictResource {
   lastLearnIndex: number
   perDayStudyNumber: number
@@ -138,6 +149,10 @@ export interface Dict extends DictResource {
   system?: boolean //是否是系统虚拟词典（收藏/错词/已掌握/文章收藏），可编辑词条但不能改名，不显示tag
   sourceId?: string //如果是官方资源副本，这里记录原始官方资源 id
   complete: boolean //是否学习完成，学完了设为true，然后lastLearnIndex重置
+  /** 词书独立的学习状态；没有该字段的旧存档仍可读取。 */
+  learning?: BookLearning
+  /** 可选单元结构；没有单元的词书沿用原来的顺序学习。 */
+  units?: BookUnit[]
   //后端字段
   enName?: string
   createdBy?: string
@@ -163,6 +178,8 @@ export interface PracticeData {
   isTypingWrongWord: boolean
   // word -> wrongTimes 用以评级
   wrongTimesMap: Record<string, number>
+  /** 本次练习中主动跳过的词。跳过不等同于已学习。 */
+  duplicateSkippedWords?: string[]
   wrongTimes: number
   ratingMap: Record<string, Rating>
   question: Question
@@ -171,6 +188,53 @@ export interface PracticeData {
 export interface TaskWords {
   new: Word[]
   review: Word[]
+  /** Shared release used when this round was generated, including route-only tasks. */
+  libraryVersion?: number
+  /** 生成本轮时使用的数量设置，用于判断是否需要立即重建。 */
+  settings?: BookTaskSettings
+  /** 本批新词开始前的词书游标。 */
+  startIndex?: number
+  /** 本批处理过的最后一个词后的游标，包含被忽略/跳过的词。 */
+  endIndex?: number
+  /** 生成任务时的单元；空字符串表示带单元词书的整书学习。 */
+  unitId?: string
+  /** 单元任务实际扫描的成员，包含被忽略的词；仅在本轮结算时计为已处理。 */
+  unitScannedWords?: string[]
+  /** 重练已经完成的单元，保留新词进度。 */
+  unitReview?: boolean
+}
+
+export type DuplicateMode = 'off' | 'manual' | 'auto'
+export type NewWordMode = 'unit' | 'custom'
+
+export interface BookTaskSettings {
+  newWordMode: NewWordMode
+  perDayStudyNumber: number
+  reviewRatio: number
+}
+
+/** 词书级别的学习状态，词均以 normalizeLearningWord() 的结果作为 key。 */
+export interface BookLearning {
+  version: 1
+  fsrs: Record<string, Card>
+  learnedWords: string[]
+  masteredWords: string[]
+  skippedWords: string[]
+  duplicateMode: DuplicateMode
+  /** Optional per-book override; absent keeps the global setting. */
+  reviewRatio?: number
+  /** Optional per-book override for normal word practice modes (0..6). */
+  practiceMode?: WordPracticeMode
+  /** 空值为整书学习；单元标识随词书学习设置同步。 */
+  selectedUnitId?: string
+  /** 有所选单元时默认跟随单元；整书学习始终使用自定义数量。 */
+  newWordMode?: NewWordMode
+  /** Last locally settled round; prevents restoring its cache after an interrupted clear. */
+  lastCompletedPracticeAt?: number
+  /** 已处理成员包含跳过/忽略词，独立于 learnedWords 的“实际学过”。 */
+  unitProcessedWords?: string[]
+  /** 仅用于防止旧全局 FSRS 在每次重新载入词书时重复回填。 */
+  legacyFsrsMigrated?: boolean
 }
 
 export interface SaveData {

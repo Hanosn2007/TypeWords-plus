@@ -19,6 +19,9 @@ import Book from '@typewords/core/components/Book.vue'
 import { MessageBox } from '@typewords/core/utils/MessageBox.tsx'
 import { useI18n } from 'vue-i18n'
 import type { FailedWordRow } from '~/components/import/WordFailedTable.vue'
+import { parseUnitImport } from '@typewords/core/utils/unitImport.ts'
+import { getBookLearning, normalizeLearningWord } from '@typewords/core/utils/bookLearning.ts'
+import { useDataSyncPersistence } from '@typewords/core/composables/useDataSyncPersistence.ts'
 
 type ImportStep = 1 | 2 | 3
 type ImportType = 'word' | 'article'
@@ -33,6 +36,8 @@ type ImportResultSummary = {
   skippedCount: number
   failedItems: string[]
   pendingFailedWords?: FailedWordRow[]
+  unitCount?: number
+  missingDefinitions?: string[]
   type: ImportType
 }
 
@@ -45,6 +50,7 @@ const route = useRoute()
 const router = useRouter()
 const base = useBaseStore()
 const runtimeStore = useRuntimeStore()
+const dataSync = useDataSyncPersistence()
 
 const step = ref<ImportStep>(1)
 const selectedDict = ref<Dict | null>(null)
@@ -122,6 +128,8 @@ function loadImportSummary(targetId: string): ImportResultSummary | null {
       skippedCount: summary.skippedCount ?? 0,
       failedItems: pendingFailedWords?.map(row => row.word) ?? summary.failedItems ?? [],
       pendingFailedWords,
+      unitCount: summary.unitCount,
+      missingDefinitions: summary.missingDefinitions,
       type,
     }
   } catch {
@@ -200,6 +208,7 @@ function restoreFromRoute() {
 }
 
 onMounted(restoreFromRoute)
+watch(() => base.load, ready => { if (ready) restoreFromRoute() })
 watch(() => route.query, restoreFromRoute)
 watch(importType, () => {
   selectedDict.value = null
@@ -987,6 +996,13 @@ async function importSelectedFile() {
     const target = await persistTarget()
 
     if (isWord.value) {
+      if (getFileExt(selectedFile.value) === 'json') {
+        const unitBook = parseUnitImport(await readFileAsText(selectedFile.value))
+        if (unitBook) {
+          await importUnitBook(target, unitBook)
+          return
+        }
+      }
       const words = await parseWordFile(selectedFile.value)
       if (!words.length) return Toast.warning('文件中没有可导入的单词')
       const result = await mergeWordsFromList(target, words)
@@ -1021,6 +1037,71 @@ async function importSelectedFile() {
   } finally {
     uploading.value = false
   }
+}
+
+async function importUnitBook(target: Dict, book: NonNullable<ReturnType<typeof parseUnitImport>>) {
+  if (!target.custom || target.system || target.words.length || target.units?.length) {
+    throw new Error('带单元的 JSON 请导入新建的空词书，以保留已有词书的单元和学习进度。')
+  }
+  if (book.words.length > 5000) throw new Error('单词数量超过5000')
+  const found = new Map<string, Partial<Word>>()
+  if (book.lookupWords.length) {
+    const res = await getWordList(null, book.lookupWords)
+    if (!res.success) throw new Error(res.msg || '查询词库失败，请稍后重试；也可在 JSON 中提供释义。')
+    const { list = [], missing = [] } = (res.data ?? {}) as { list: Word[]; missing: string[] }
+    const missingSet = new Set(missing.map(normalizeLearningWord))
+    book.lookupWords.forEach((word, index) => {
+      const item = list[index]
+      if (item?.trans?.length && !missingSet.has(normalizeLearningWord(word))) {
+        found.set(normalizeLearningWord(word), item)
+      }
+    })
+  }
+  const missingDefinitions: string[] = []
+  let officialCount = 0
+  const next = cloneDeep(target)
+  next.words = book.words.map(source => {
+    const key = normalizeLearningWord(source.word)
+    const matched = found.get(key)
+    const hasSourceTranslation = !!source.trans?.length
+    if (!hasSourceTranslation && matched) officialCount++
+    const word = getDefaultWord({ ...matched, ...source, id: nanoid(6), custom: hasSourceTranslation || !matched })
+    if (!hasSourceTranslation && matched) word.trans = matched.trans ?? []
+    if (!word.trans.length) missingDefinitions.push(word.word)
+    return word
+  })
+  next.units = book.units
+  next.length = next.words.length
+  next.lastLearnIndex = 0
+  next.complete = false
+  const learning = getBookLearning(next)
+  learning.selectedUnitId = book.units[0].id
+  learning.legacyFsrsMigrated = true
+  // The success screen must not race the normal debounced save when the user immediately refreshes.
+  const saved = upsertTarget(next)
+  await dataSync.saveDictState(base.$state, { pullWhenRemoteNewer: false })
+  completeImport(saved, {
+    successCount: next.words.length,
+    officialCount,
+    customCount: next.words.length - officialCount,
+    importMode: 'custom',
+    skippedCount: 0,
+    failedItems: [],
+    unitCount: book.units.length,
+    missingDefinitions,
+    type: 'word',
+  })
+}
+
+function downloadUnitTemplate() {
+  const template = {
+    format: 'typewords-units', version: 1, name: '我的词书',
+    units: [
+      { id: 'lesson-01', name: 'Lesson 1', words: ['apple', 'banana'] },
+      { id: 'lesson-02', name: 'Lesson 2', words: [{ word: 'pacific', phonetic0: "pə'sɪfɪk", trans: [{ pos: 'adj.', cn: '和平的；平静的' }] }] },
+    ],
+  }
+  saveAs(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json;charset=utf-8' }), '单元词书模板.json')
 }
 
 function submitWordImport() {
@@ -1220,6 +1301,10 @@ async function goManualArticleEditWithoutConfirm() {
               </div>
 
               <template v-if="isWord">
+                <div class="mt-3 text-sm">
+                  <a href="#" @click.prevent="downloadUnitTemplate">下载带单元的 JSON 模板</a>
+                  <p class="helper-text mt-1">在上方上传到新建的空词书。保留每个单元的名称、顺序和成员；可写单词或附带释义，未收录词也保留原位置。</p>
+                </div>
                 <div class="custom-import-panel" :class="{ 'import-block--disabled': customUploadDisabled }">
                   <div class="text-lg mt-2">导入自定义单词</div>
                   <div class="my-2 color-gray text-sm">
@@ -1314,6 +1399,7 @@ async function goManualArticleEditWithoutConfirm() {
             </div>
             <div class="ml-10">
               <template v-if="isWord && isCustomImportResult">
+                <li v-if="importSummary.unitCount">{{ importSummary.unitCount }} 个单元，共 {{ importSummary.successCount }} 词；内部词库匹配 {{ officialCount }} 词</li>
                 <li>自定义单词 {{ customCount }} 个（已导入到{{ targetLabel }}中）</li>
               </template>
               <template v-else-if="isWord">
@@ -1335,6 +1421,9 @@ async function goManualArticleEditWithoutConfirm() {
                 </ul>
               </li>
               <li v-else-if="failedCount && !isWord">{{ failedCount }} 个失败（原因：缺少 title 或 text 必填字段）</li>
+              <li v-if="importSummary.missingDefinitions?.length">
+                以下 {{ importSummary.missingDefinitions.length }} 词暂缺释义，已保留在原单元，可在词书详情编辑补充：{{ importSummary.missingDefinitions.join('、') }}
+              </li>
             </div>
           </div>
 

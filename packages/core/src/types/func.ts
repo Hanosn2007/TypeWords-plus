@@ -69,7 +69,10 @@ export function getDefaultDict(val: Partial<Dict> = {}): Dict {
     custom: false,
     system: false,
     sourceId: '',
+    library: undefined,
     complete: false,
+    learning: undefined,
+    units: undefined,
 
     createdBy: '',
     enName: '',

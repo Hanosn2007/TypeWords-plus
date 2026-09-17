@@ -5,6 +5,7 @@ import CommonSetting from './CommonSetting.vue'
 import WordSetting from './WordSetting.vue'
 import ArticleSetting from './ArticleSetting.vue'
 import SoundSetting from './SoundSetting.vue'
+import BookLearningSettings from '../word/BookLearningSettings.vue'
 import { useDisableEventListener } from '@typewords/utils'
 
 const Dialog = defineAsyncComponent(() => import('@typewords/base/Dialog'))
@@ -13,13 +14,14 @@ const props = defineProps<{
   type: 'article' | 'word'
   /** 外部传入时直接打开到指定 tab（3 = 音效设置） */
   initialTab?: number
+  bookLabel?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'open'): void
 }>()
 
-let tabIndex = $ref(props.type === 'word' ? 1 : 2)
+let tabIndex = $ref(props.initialTab ?? (props.type === 'word' ? 5 : 2))
 let show = $ref(false)
 
 useDisableEventListener(() => show)
@@ -39,6 +41,10 @@ defineExpose({ openSoundTab })
       <div class="flex flex-1 overflow-hidden">
         <div class="left">
           <div class="tabs">
+            <button type="button" class="tab" :class="tabIndex === 5 && 'active'" @click="tabIndex = 5" v-if="type === 'word'">
+              <IconFluentBookLetter20Regular width="20" />
+              <span>当前词书</span>
+            </button>
             <div class="tab" :class="tabIndex === 1 && 'active'" @click="tabIndex = 1" v-if="type === 'word'">
               <IconFluentTextUnderlineDouble20Regular width="20" />
               <span>{{ $t('word_settings') }}</span>
@@ -58,6 +64,7 @@ defineExpose({ openSoundTab })
           </div>
         </div>
         <div class="content">
+          <BookLearningSettings v-if="show && tabIndex === 5" @saved="show = false" @cancelled="show = false" />
           <CommonSetting v-if="tabIndex === 0" />
           <WordSetting v-if="tabIndex === 1" />
           <ArticleSetting v-if="tabIndex === 2" />
@@ -66,12 +73,15 @@ defineExpose({ openSoundTab })
       </div>
     </div>
   </Dialog>
-  <BaseIcon
+  <button v-if="bookLabel" type="button" class="book-settings-trigger" title="当前词书与练习设置" @click="show = true; tabIndex = 5">
+    <IconFluentSettings20Regular /><span>词书设置</span>
+  </button>
+  <BaseIcon v-else
     :title="$t('settings')"
     @click="
       () => {
         show = true
-        tabIndex = props.initialTab ?? (props.type === 'word' ? 1 : 2)
+        tabIndex = props.initialTab ?? (props.type === 'word' ? 5 : 2)
       }
     "
   >
@@ -80,6 +90,8 @@ defineExpose({ openSoundTab })
 </template>
 
 <style scoped lang="scss">
+.book-settings-trigger { display: inline-flex; align-items: center; gap: .25rem; border: 0; padding: .25rem; background: transparent; color: inherit; font-size: .8rem; white-space: nowrap; cursor: pointer; }
+
 .setting {
   .left {
     display: flex;
@@ -99,8 +111,13 @@ defineExpose({ openSoundTab })
       .tab {
         @apply cursor-pointer flex items-center relative;
         padding: 0.6rem 0.9rem;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
         border-radius: 0.5rem;
-        width: 8rem;
+        width: 9rem;
+        white-space: nowrap;
         gap: 0.6rem;
         transition: all 0.5s;
 

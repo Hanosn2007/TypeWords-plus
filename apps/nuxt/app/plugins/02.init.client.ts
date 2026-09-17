@@ -17,17 +17,30 @@ export default defineNuxtPlugin(async nuxtApp => {
     })()
   }
 
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
+  if ('serviceWorker' in navigator && !import.meta.dev) {
+    const cacheOpenPage = () => {
+      const assets = performance.getEntriesByType('resource').map(entry => entry.name)
+      const page = new URL(location.href)
+      page.hash = ''
+      navigator.serviceWorker.ready.then(registration => {
+        registration.active?.postMessage({ type: 'TYPEWORDS_CACHE_OPEN_PAGE', page: page.href, assets })
+      }).catch(error => console.warn('离线页面准备失败', error))
+    }
+    const registerWorker = () => {
       navigator.serviceWorker
         .register(withAppBaseURL('/service-worker.js'))
         .then(registration => {
           console.log('ServiceWorker registration successful with scope: ', registration.scope)
+          cacheOpenPage()
         })
         .catch(error => {
           console.log('ServiceWorker registration failed: ', error)
         })
-    })
+    }
+    if (document.readyState === 'complete') registerWorker()
+    else window.addEventListener('load', registerWorker, { once: true })
+    navigator.serviceWorker.addEventListener('controllerchange', cacheOpenPage)
+    nuxtApp.hook('page:finish', cacheOpenPage)
   }
 
   console.json = function (v: any, space = 0) {

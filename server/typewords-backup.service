@@ -1,0 +1,10 @@
+[Unit]
+Description=TypeWords verified SQLite backup
+After=local-fs.target network-online.target
+
+[Service]
+Type=oneshot
+UMask=0077
+EnvironmentFile=-/etc/typewords-backup.env
+ExecStart=/usr/bin/python3 /opt/typewords/backup_sync.py
+Nice=10

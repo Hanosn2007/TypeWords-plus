@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import type { Word } from '../../types'
 import { BaseButton } from '@typewords/base'
-import { reactive, ref } from 'vue'
+import { reactive, ref, watch } from 'vue'
+import { useBaseStore } from '../../stores/base'
+import { findOtherBookLearning, getBookLearning } from '../../utils/bookLearning'
 
-type PaintMode = 'know' | 'unknown' | 'mastered'
+type PaintMode = 'know' | 'unknown' | 'mastered' | 'skip'
 
 const props = defineProps<{
   words: Word[]
@@ -13,6 +15,7 @@ export type WordMarkPickResult = {
   know: Word[]
   unknown: Word[]
   mastered: Word[]
+  skipped: Word[]
 }
 
 const emit = defineEmits<{
@@ -21,12 +24,38 @@ const emit = defineEmits<{
 
 const paintMode = ref<PaintMode>('know')
 const marks = reactive<Record<number, PaintMode>>({})
+const store = useBaseStore()
 
 const modeLabels: Record<PaintMode, string> = {
   know: '我认识',
   unknown: '不认识',
   mastered: '已掌握',
+  skip: '跳过',
 }
+
+function getDuplicateSources(word: Word) {
+  if (getBookLearning(store.sdict).duplicateMode === 'off') return []
+  return findOtherBookLearning(store.word.bookList, store.sdict, word.word)
+}
+
+function duplicateSourceLabel(word: Word) {
+  return getDuplicateSources(word)
+    .map(source => `「${source.name}」${source.mastered ? '（已掌握）' : ''}`)
+    .join('、')
+}
+
+function resetMarksForWords() {
+  Object.keys(marks).forEach(key => delete marks[Number(key)])
+  if (getBookLearning(store.sdict).duplicateMode !== 'auto') return
+
+  props.words.forEach((word, index) => {
+    if (getDuplicateSources(word).some(source => source.mastered)) marks[index] = 'skip'
+  })
+}
+
+// Auto-mark only when this batch is initialized. A manual undo remains intact
+// while the user works through the same stable words list.
+watch(() => props.words, resetMarksForWords, { immediate: true })
 
 /** 与当前顶部模式同色则取消标记，否则设为当前模式。 */
 function onWordClick(index: number) {
@@ -38,6 +67,15 @@ function onWordClick(index: number) {
   marks[index] = paintMode.value
 }
 
+function toggleSkip(index: number) {
+  if (index < 0 || index >= props.words.length) return
+  if (marks[index] === 'skip') {
+    delete marks[index]
+    return
+  }
+  marks[index] = 'skip'
+}
+
 function rowClass(index: number) {
   const m = marks[index]
   if (!m) return 'mark-none'
@@ -45,6 +83,7 @@ function rowClass(index: number) {
     know: 'mark-know',
     unknown: 'mark-unknown',
     mastered: 'mark-mastered',
+    skip: 'mark-skip',
   }[m]
 }
 
@@ -67,6 +106,7 @@ function buildThreeLists(): WordMarkPickResult {
     know: props.words.filter((_, i) => marks[i] === 'know'),
     unknown: buildUnknownList(),
     mastered: props.words.filter((_, i) => marks[i] === 'mastered'),
+    skipped: props.words.filter((_, i) => marks[i] === 'skip'),
   }
 }
 
@@ -90,9 +130,7 @@ function onComplete() {
         {{ modeLabels[mode] }}
       </button>
     </div>
-    <div>
-      说明：点词标记，重复点击取消；切换分类继续标记。未标记与“不认识”将进入后续练习。
-    </div>
+    <div>说明：点词标记，重复点击取消；切换分类继续标记。未标记与“不认识”将进入后续练习。</div>
     <div class="text-sm color-[var(--color-font-3)]">
       小提示：如果认识的多，建议切换为“不认识”进行标记；反之，切换为“我认识”进行标记
     </div>
@@ -107,6 +145,12 @@ function onComplete() {
         @click="onWordClick(index)"
       >
         <span class="word-text">{{ item.word }}</span>
+        <div v-if="getDuplicateSources(item).length" class="duplicate-hint">
+          <span>已在 {{ duplicateSourceLabel(item) }} 学过</span>
+          <button type="button" class="duplicate-skip" @click.stop="toggleSkip(index)">
+            {{ marks[index] === 'skip' ? '撤销跳过' : '跳过' }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -209,11 +253,37 @@ function onComplete() {
     color: #1d4ed8;
   }
 }
+.word-chip.mark-skip {
+  background: rgba(107, 114, 128, 0.14);
+  border-color: rgba(107, 114, 128, 0.4);
+  .word-text {
+    color: #6b7280;
+    text-decoration: line-through;
+  }
+}
 .word-chip.mark-none {
   background: var(--color-bg-soft, rgba(255, 255, 255, 0.04));
   &:hover {
     background: rgba(128, 128, 128, 0.1);
     border-color: rgba(128, 128, 128, 0.25);
   }
+}
+
+.duplicate-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  color: var(--color-font-3, #6b7280);
+}
+
+.duplicate-skip {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: underline;
 }
 </style>

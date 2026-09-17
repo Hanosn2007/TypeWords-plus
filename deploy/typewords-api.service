@@ -11,6 +11,8 @@ WorkingDirectory=/opt/typewords
 Environment=TYPEWORDS_LISTEN=127.0.0.1:8080
 Environment=TYPEWORDS_DATA_DIR=/var/lib/typewords
 Environment=ALLOW_REGISTRATION=true
+# Add existing account IDs only after registering and checking their IDs:
+# Environment=TYPEWORDS_ADMIN_USER_IDS=12,34
 ExecStart=/opt/typewords/typewords-api
 Restart=on-failure
 RestartSec=3

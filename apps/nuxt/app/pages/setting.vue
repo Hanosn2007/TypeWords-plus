@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { CloudSync } from '@typewords/core/utils/cloudSync.ts'
 import { defineAsyncComponent, nextTick, ref, watch } from 'vue'
 import { getDefaultSettingState, useSettingStore } from '@typewords/core/stores/setting'
 import { getShortcutKey, useEventListener } from '@typewords/core/hooks/event'
@@ -141,7 +142,12 @@ useEventListener('keydown', (e: KeyboardEvent) => {
       }
 
       for (const [k, v] of Object.entries(settingStore.shortcutKeyMap)) {
-        if (v === shortcutKey && k !== editShortcutKey) {
+        if (
+          v === shortcutKey &&
+          k !== editShortcutKey &&
+          k !== 'SkipLearnedWord' &&
+          editShortcutKey !== 'SkipLearnedWord'
+        ) {
           settingStore.shortcutKeyMap[editShortcutKey] = DefaultShortcutKeyMap[editShortcutKey]
           return Toast.warning(t('shortcut_key_duplicate'))
         }
@@ -169,6 +175,7 @@ function focusShortcutInput() {
 // 快捷键中文名称映射
 function getShortcutKeyName(key: string): string {
   const shortcutKeyNameMap: Record<string, string> = {
+    SkipLearnedWord: '跳过已学会的重复单词',
     ShowWord: t('shortcut_show_word'),
     EditArticle: t('shortcut_edit_article'),
     Next: t('shortcut_next'),
@@ -208,6 +215,11 @@ function getShortcutKeyName(key: string): string {
   }
 
   return shortcutKeyNameMap[key] || key
+}
+
+function formatShortcutKey(key: unknown) {
+  const shortcutKey = String(key ?? '')
+  return shortcutKey === 'Space' ? '空格' : shortcutKey
 }
 
 function resetShortcutKeyMap() {
@@ -251,7 +263,9 @@ async function importJson(str: string) {
     runtimeStore.globalLoading = true
     const pushOk = await dataSyncPersistence.forcePushLocalDataToRemote(data)
     runtimeStore.globalLoading = false
-    if (pushOk) {
+    if (CloudSync.check()) {
+      Toast.success('已导入本机并保留原副本；云端同步如有冲突，请到同步页处理。')
+    } else if (pushOk && hasRemote) {
       Toast.success(t('import_success_overwrite_remote'))
     } else {
       Toast.success(hasRemote ? t('import_success_push_failed') : t('import_success'))
@@ -390,7 +404,9 @@ async function restoreHistoryData() {
     runtimeStore.globalLoading = true
     const pushOk = await dataSyncPersistence.forcePushLocalDataToRemote(data)
     runtimeStore.globalLoading = false
-    if (pushOk) {
+    if (CloudSync.check()) {
+      Toast.success('已恢复到本机并保留原副本；云端同步如有冲突，请到同步页处理。')
+    } else if (pushOk && hasRemote) {
       Toast.success(t('history_restore_success_overwrite_remote'))
     } else {
       Toast.success(hasRemote ? t('history_restore_success_push_failed') : t('restore_success_short'))
@@ -738,7 +754,7 @@ function disable360(){
                   <div class="set-key" v-if="editShortcutKey === item[0]">
                     <input
                       ref="shortcutInput"
-                      :value="item[1] ? item[1] : $t('no_shortcut_set')"
+                      :value="item[1] ? formatShortcutKey(item[1]) : $t('no_shortcut_set')"
                       readonly
                       type="text"
                       @blur="handleInputBlur"
@@ -750,7 +766,7 @@ function disable360(){
                     >
                   </div>
                   <div v-else>
-                    <div v-if="item[1]">{{ item[1] }}</div>
+                    <div v-if="item[1]">{{ formatShortcutKey(item[1]) }}</div>
                     <span v-else>{{ $t('no_shortcut_set') }}</span>
                   </div>
                 </div>

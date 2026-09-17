@@ -34,7 +34,7 @@ import { DeleteIcon } from '@typewords/base'
 import PracticeSettingDialog from '@typewords/core/components/word/PracticeSettingDialog.vue'
 import ChangeLastPracticeIndexDialog from '@typewords/core/components/word/ChangeLastPracticeIndexDialog.vue'
 import { useSettingStore } from '@typewords/core/stores/setting.ts'
-import { useFetch } from '@vueuse/core'
+import { useWordCatalog } from '@typewords/core/composables/useWordCatalog.ts'
 import {
   APP_NAME,
   AppEnv,
@@ -55,6 +55,7 @@ import { useDataSyncPersistence } from '@typewords/core/composables/useDataSyncP
 import { WordPracticeMode } from '@typewords/core/types/enum.ts'
 import type { PracticeWordCache } from '@typewords/core/utils/cache.ts'
 import dayjs from 'dayjs'
+import { getBookLearning } from '@typewords/core/utils/bookLearning.ts'
 
 const store = useBaseStore()
 const settingStore = useSettingStore()
@@ -85,7 +86,7 @@ function resetCacheData() {
   isSaveData = false
   practiceData.practiceData = null
   practiceData.statStoreData = null
-  wordPersistence.clear()
+  wordPersistence.clear(String(store.sdict.id))
 }
 
 /**
@@ -136,8 +137,9 @@ watch(
 async function onvisibilitychange() {
   if (!document.hidden) {
     //当页面可见时，检查是否需要从远程拉取数据
-    const d = await wordPersistence.fetch()
+    const d = await wordPersistence.fetch(String(store.sdict.id))
     if (d) {
+      if (d.practiceMode !== undefined) settingStore.wordPracticeMode = d.practiceMode
       practiceData = d
       isSaveData = true
     }
@@ -156,15 +158,19 @@ async function init() {
   document.addEventListener('visibilitychange', onvisibilitychange)
 
   if (store.word.studyIndex >= 3) {
-    if (!store.sdict.custom && !store.sdict.words.length) {
+    if (!store.sdict.custom && (!store.sdict.words.length || store.sdict.library)) {
       store.word.bookList[store.word.studyIndex] = await _getDictDataByUrl(store.sdict)
     }
   }
 
+  const savedPracticeMode = getBookLearning(store.sdict).practiceMode
+  if (savedPracticeMode !== undefined) settingStore.wordPracticeMode = savedPracticeMode
+
   if (!practiceData?.taskWords.new.length && store.sdict.words.length) {
-    const d = await wordPersistence.load()
+    const d = await wordPersistence.load(String(store.sdict.id))
     if (d) {
       practiceData = d
+      if (d.practiceMode !== undefined) settingStore.wordPracticeMode = d.practiceMode
       isSaveData = true
     } else {
       practiceData.taskWords = getCurrentStudyWord()
@@ -189,6 +195,7 @@ function startPractice(practiceMode: WordPracticeMode, resetCache: boolean = fal
     }
 
     settingStore.wordPracticeMode = practiceMode
+    if (practiceMode <= WordPracticeMode.Review) getBookLearning(store.sdict).practiceMode = practiceMode
 
     window.umami?.track('startStudyWord', {
       name: store.sdict.name,
@@ -352,7 +359,7 @@ function onSelectCalendarDate(dateKey: string) {
 
 async function goDictDetail(val: DictResource) {
   if (!val.id) return nav('dict-list')
-  runtimeStore.editDict = getDefaultDict(val)
+  runtimeStore.editDict = getDefaultDict(store.word.bookList.find(book => String(book.id) === String(val.id)) ?? val)
   nav('/dict', {})
 }
 
@@ -421,6 +428,7 @@ async function onShufflePracticeSettingOk(total) {
   await dataSync.saveDictState()
   resetCacheData()
   settingStore.wordPracticeMode = editingWordPracticeMode
+  if (editingWordPracticeMode <= WordPracticeMode.Review) getBookLearning(store.sdict).practiceMode = editingWordPracticeMode
 
   window.umami?.track('startStudyWord', {
     name: store.sdict.name,
@@ -460,7 +468,7 @@ async function saveLastPracticeIndex(e) {
   practiceData.taskWords = getCurrentStudyWord()
 }
 
-const { data: recommendDictList, isFetching } = useFetch(resourceWrap(DICT_LIST.WORD.RECOMMENDED)).json()
+const { data: recommendDictList, isFetching } = useWordCatalog(true)
 
 const systemPracticeText = $computed(() => {
   if (settingStore.wordPracticeMode === WordPracticeMode.Free) {

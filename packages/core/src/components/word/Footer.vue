@@ -10,24 +10,31 @@ import StageProgress from '../StageProgress.vue'
 import { WordPracticeModeNameMap, WordPracticeStageNameMap } from '../../config/env'
 import { useI18n } from 'vue-i18n'
 import WordInputModeSegment from './WordInputModeSegment.vue'
+import LibraryFeedbackButton from './LibraryFeedbackButton.vue'
+import { useBaseStore } from '../../stores/base.ts'
 
 const statStore = usePracticeStore()
+const libraryBookStore = useBaseStore()
 const settingStore = useSettingStore()
 const { t: $t } = useI18n()
 
 defineProps<{
   showEdit?: boolean
+  canUndoSkipStep?: boolean
 }>()
 
 const emit = defineEmits<{
   edit: []
   skipStep: []
+  undoSkipStep: []
 }>()
 
 let practiceData = inject<PracticeData>('practiceData')
 const bumpPracticeTimerActivity = inject<(() => void) | undefined>('bumpPracticeTimerActivity', undefined)
+const togglePracticeTimer = inject<(() => void) | undefined>('togglePracticeTimer', undefined)
 
 function onTimerRowClick() {
+  if (togglePracticeTimer) return togglePracticeTimer()
   if (statStore.timerPaused) {
     statStore.resumeTimer()
     bumpPracticeTimerActivity?.()
@@ -294,9 +301,18 @@ const stages = $computed(() => {
             />
           </div>
 
-          <SettingDialog type="word" />
+          <SettingDialog type="word" book-label />
+          <LibraryFeedbackButton v-if="libraryBookStore.sdict.library" :library="libraryBookStore.sdict.library" :book-name="libraryBookStore.sdict.name" :word="practiceData?.words?.[practiceData.index]?.word" />
 
           <VolumeSettingMiniDialog />
+
+          <BaseIcon
+            v-if="canUndoSkipStep"
+            @click="emit('undoSkipStep')"
+            title="撤销上次跳过，返回上一阶段"
+          >
+            <IconFluentArrowLeft16Regular />
+          </BaseIcon>
 
           <BaseIcon
             v-if="settingStore.wordPracticeMode !== WordPracticeMode.Free"

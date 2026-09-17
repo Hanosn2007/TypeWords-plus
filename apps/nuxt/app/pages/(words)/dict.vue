@@ -19,7 +19,9 @@ import EditBook from '@typewords/core/components/article/EditBook.vue'
 import BaseTable from '@typewords/core/components/BaseTable.vue'
 import PracticeSettingDialog from '@typewords/core/components/word/PracticeSettingDialog.vue'
 import WordItem from '@typewords/core/components/word/WordItem.vue'
-import { flushStatToStore, usePracticeWordPersistence } from '@typewords/core/composables/usePracticePersistence'
+import { getBookLearning } from '@typewords/core/utils/bookLearning.ts'
+import { hasVisibleBookUnits } from '@typewords/core/utils/libraryContent.ts'
+import { usePracticeWordPersistence } from '@typewords/core/composables/usePracticePersistence'
 import { AppEnv, DICT_LIST, LIB_JS_URL, TourConfig } from '@typewords/core/config/env.ts'
 import { getCurrentStudyWord } from '@typewords/core/hooks/dict.ts'
 import { useBaseStore } from '@typewords/core/stores/base.ts'
@@ -40,7 +42,6 @@ import {
   shuffle,
   useNav,
 } from '@typewords/core/utils'
-import { getPracticeWordCacheLocal } from '@typewords/core/utils/cache.ts'
 import saveAs from 'file-saver'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -331,6 +332,7 @@ function createCopy() {
 }
 
 onMounted(async () => {
+  try {
   if (route.query?.isAdd) {
     isAdd = true
     runtimeStore.editDict = getDefaultDict()
@@ -338,28 +340,14 @@ onMounted(async () => {
     if (!runtimeStore.editDict.id) {
       return router.push('/words')
     } else {
-      if (!runtimeStore.editDict.words.length && !runtimeStore.editDict.custom && !runtimeStore.editDict.system) {
+      if ((!runtimeStore.editDict.words.length || runtimeStore.editDict.library) && !runtimeStore.editDict.custom && !runtimeStore.editDict.system) {
         loading = true
-        let dictList = await fetch(resourceWrap(DICT_LIST.WORD.ALL)).then(r => r.json())
         let dict = await _getDictDataByUrl(runtimeStore.editDict)
-        let r = dictList.find(v => [v.enName, v.id].includes(runtimeStore.editDict.id))
-        if (r) {
-          runtimeStore.editDict.words = dict.words
-          runtimeStore.editDict.id = r.id
-          runtimeStore.editDict.enName = r.enName
-          runtimeStore.editDict.cover = r.cover
-          runtimeStore.editDict.category = r.category
-          runtimeStore.editDict.tags = r.tags
-          runtimeStore.editDict.url = r.url
-          runtimeStore.editDict.description = r.description
-          runtimeStore.editDict.name = r.name
-        } else {
-          runtimeStore.editDict = dict
-        }
+        runtimeStore.editDict = dict
         runtimeStore.editDict.length = dict.words.length
       }
       if (base.word.bookList.find(book => book.id === runtimeStore.editDict.id)) {
-        if (AppEnv.CAN_REQUEST) {
+        if (AppEnv.CAN_REQUEST && !runtimeStore.editDict.library) {
           getDetail(runtimeStore.editDict.id)
         }
       }
@@ -369,6 +357,9 @@ onMounted(async () => {
 
   allList = runtimeStore.editDict.words
   tableRef.value.getData()
+  } catch (error) {
+    Toast.error(error instanceof Error ? error.message : '词书加载失败，请重试。')
+  } finally { loading = false }
 })
 
 async function getDetail(id) {
@@ -404,18 +395,23 @@ const { nav } = useNav()
 
 //todo 可以和首页合并
 async function startPractice(query = {}) {
+  const firstAddition = !base.word.bookList.some(book => String(book.id) === String(runtimeStore.editDict.id))
   // debugger
   //这里重置一下，因为下面切换词典后，导致学习进度为0，而切换前的模式有可能需要有进度才可以用
   if (![WordPracticeMode.Free, WordPracticeMode.System].includes(settingStore.wordPracticeMode)) {
     settingStore.wordPracticeMode = WordPracticeMode.System
   }
-  // 切换词典前，先将进行中的练习统计落库，避免学习记录丢失
-  const cache = await getPracticeWordCacheLocal()
-  if (cache) {
-    flushStatToStore((cache as any)?.statStoreData)
-    await wordPersistence.clear()
-  }
+  // 每本词书保留自己的练习现场，切换时不结算或清除其他词书。
   await base.changeDict(runtimeStore.editDict)
+  const cache = await wordPersistence.load(String(store.sdict.id))
+  if (firstAddition && store.sdict.library && hasVisibleBookUnits(store.sdict) && !cache) {
+    nav('/words')
+    Toast.success('词书已添加，请选择学习单元后开始。')
+    return
+  }
+  const resumeCurrentPractice = !!cache
+  const bookMode = getBookLearning(store.sdict).practiceMode
+  if (bookMode !== undefined) settingStore.wordPracticeMode = bookMode
   window.umami?.track('startStudyWord', {
     name: store.sdict.name,
     index: store.sdict.lastLearnIndex,
@@ -424,8 +420,12 @@ async function startPractice(query = {}) {
     complete: store.sdict.complete,
     wordPracticeMode: settingStore.wordPracticeMode,
   })
-  let currentStudy = getCurrentStudyWord()
-  nav('practice-words/' + store.sdict.id, query, { taskWords: currentStudy })
+  if (resumeCurrentPractice) {
+    nav('practice-words/' + store.sdict.id, query, cache)
+  } else {
+    const currentStudy = getCurrentStudyWord()
+    nav('practice-words/' + store.sdict.id, query, { dictId: String(store.sdict.id), taskWords: currentStudy })
+  }
 }
 
 async function addMyStudyList() {
@@ -700,6 +700,7 @@ defineRender(() => {
                     showCollectIcon={false}
                     showMarkIcon={false}
                     excludeDictId={runtimeStore.editDict.id}
+                    learningDict={runtimeStore.editDict}
                     item={val.item}
                   >
                     {{

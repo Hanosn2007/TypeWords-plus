@@ -39,3 +39,19 @@ report.html
 !.env.example
 public/vscode
 apps/TypeWordsMiniApp
+
+# Local release evidence, browser exports, credentials and incident records
+/output/
+/.playwright-cli/
+/PROJECT_LOG.md
+/PROJECT_STATE.md
+/TYPEWORDS_CUSTOMIZATION_HANDOFF.md
+/LIBRARY_PLAN.md
+/LIBRARY_GUIDE.md
+__pycache__/
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3

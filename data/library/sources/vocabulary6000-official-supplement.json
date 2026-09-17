@@ -1,0 +1,216 @@
+{
+  "endpoint": "https://api.typewords.cc/public.word/getWordList",
+  "method": "POST",
+  "requestedWords": [
+    "profound",
+    "wholesome"
+  ],
+  "queriedAt": "2026-09-12T07:43:27Z",
+  "httpStatus": 200,
+  "responseSha256": "a418283ce076a9c1453d111fa0188c7fd56f711ae3165870c66e33f966eaf589",
+  "use": "Only translations for the two entries missing definitions in the local XLSX. The complete original API response is retained below.",
+  "response": {
+    "code": 200,
+    "success": true,
+    "msg": "",
+    "data": {
+      "list": [
+        {
+          "id": 27570,
+          "word": "profound",
+          "phonetic0": "prəˈfaʊnd",
+          "phonetic1": "prəˈfaʊnd",
+          "synos": [
+            {
+              "cn": "深厚的；意义深远的；渊博的",
+              "ws": [
+                "encyclopedic",
+                "cyclopaedic"
+              ],
+              "pos": "adj."
+            }
+          ],
+          "etymology": [
+            {
+              "d": "",
+              "t": "profound:"
+            },
+            {
+              "d": "后期盎格鲁-诺曼语profound, 来自古法语profont, 来自拉丁语profundus, 来自pro + fundus(\"bottom; foundation\").",
+              "t": "profound:"
+            },
+            {
+              "d": "来源于拉丁语中由pro-(前)和fundus(基础)组成的复合词profundus(深的)。  \n 词根词缀： pro-前 + found( = -fund- )基础",
+              "t": "profound:深刻的，意义深远的；渊博的，造诣深的；深邃的"
+            },
+            {
+              "d": "来自拉丁语profundus,深的，无底的，来自pro-,向前，朝向，fundus,底部，词源同fundamental,bottom.引申词义深邃的，深远的等。拼写受found影响。",
+              "t": "profound:深邃的，深远的，深刻的"
+            }
+          ],
+          "inflections": null,
+          "e2e": null,
+          "trans": [
+            {
+              "pos": "adj.",
+              "cn": "（影响）深刻的，极大的；（感情）强烈的，深切的；（思想）深邃的，（见解）深刻的；<文>深的，深处的；完全的；艰深的，玄奥的；（疾病，残疾）严重的",
+              "frequency": 2
+            }
+          ],
+          "sentences": [
+            {
+              "c": "He sighed with profound resignation.",
+              "cn": "他极度无奈地叹气。"
+            },
+            {
+              "c": "Colour has a profound, though often subliminal, influence on our senses and moods.",
+              "cn": "颜色对我们的感觉和情绪有一种很深远的影响，尽管常常是潜意识的。"
+            },
+            {
+              "c": "Her speech made a profound impact on everyone.",
+              "cn": "她的讲话对每个人都有深远的影响。"
+            }
+          ],
+          "examSentences": [],
+          "phrases": [],
+          "examsSrc": null,
+          "relWords": {
+            "rels": [
+              {
+                "pos": "adv.",
+                "words": [
+                  {
+                    "c": "profoundly",
+                    "cn": "深刻地；深深地；极度地"
+                  }
+                ]
+              },
+              {
+                "pos": "n.",
+                "words": [
+                  {
+                    "c": "profoundness",
+                    "cn": "深刻；深奥"
+                  }
+                ]
+              }
+            ],
+            "root": "profound"
+          },
+          "langType": "en",
+          "createdAt": "2026-05-10 03:06:04",
+          "updatedAt": "2026-05-10 03:06:04"
+        },
+        {
+          "id": 38875,
+          "word": "wholesome",
+          "phonetic0": "ˈhəʊlsəm",
+          "phonetic1": "ˈhoʊlsəm",
+          "synos": [
+            {
+              "cn": "健全的；有益健康的；合乎卫生的；审慎的",
+              "ws": [
+                "healthy",
+                "calculating",
+                "sound"
+              ],
+              "pos": "adj."
+            }
+          ],
+          "etymology": [
+            {
+              "d": "",
+              "t": "wholesome:"
+            },
+            {
+              "d": "来自whole的古义，健康的，词源同healthy,-some,形容词后缀。参见whole.",
+              "t": "wholesome:健康的"
+            },
+            {
+              "d": "词根词缀： whole全体的 + -some形容词词尾",
+              "t": "wholesome:健全的，有益健康的，卫生的"
+            },
+            {
+              "d": "来自 whole 的古义，健康的，词源同 healthy,-some,形容词后缀。",
+              "t": "wholesome:健康的"
+            }
+          ],
+          "inflections": null,
+          "e2e": null,
+          "trans": [
+            {
+              "pos": "adj.",
+              "cn": "（食物）有益健康的；有益身心健康的，增进身心健康的；（显得）健康的，朝气蓬勃的",
+              "frequency": 2
+            }
+          ],
+          "sentences": [
+            {
+              "c": "Pleasure him with sports, beguile him in wholesome ways, so that his health come again.",
+              "cn": "让他在运动中获得快乐，用有益健康的方式诱导他，这样他就恢复健康了。"
+            },
+            {
+              "c": "Peanut butter is a wholesome food, but it will put you over your daily calorie limits.",
+              "cn": "花生酱是一种有益健康的食物，但它会使您超出日常卡路里的摄入量。"
+            },
+            {
+              "c": "It showed stable, wholesome American traditions.",
+              "cn": "它显示了美国稳定、健全的传统。"
+            }
+          ],
+          "examSentences": [],
+          "phrases": [],
+          "examsSrc": null,
+          "relWords": {
+            "rels": [
+              {
+                "pos": "adj.",
+                "words": [
+                  {
+                    "c": "whole",
+                    "cn": "完整的；纯粹的"
+                  }
+                ]
+              },
+              {
+                "pos": "adv.",
+                "words": [
+                  {
+                    "c": "wholly",
+                    "cn": "完全地；全部；统统"
+                  },
+                  {
+                    "c": "wholesomely",
+                    "cn": "卫生地；有益健康地；审慎地；安全地"
+                  }
+                ]
+              },
+              {
+                "pos": "n.",
+                "words": [
+                  {
+                    "c": "whole",
+                    "cn": "整体；全部"
+                  },
+                  {
+                    "c": "wholeness",
+                    "cn": "完整；完全；全体"
+                  },
+                  {
+                    "c": "wholesomeness",
+                    "cn": "有益于身心健康；增进健康"
+                  }
+                ]
+              }
+            ],
+            "root": "whole"
+          },
+          "langType": "en",
+          "createdAt": "2026-05-10 03:06:33",
+          "updatedAt": "2026-05-10 03:06:33"
+        }
+      ],
+      "missing": []
+    }
+  }
+}

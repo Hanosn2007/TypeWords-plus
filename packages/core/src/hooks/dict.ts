@@ -10,9 +10,29 @@ import { useRuntimeStore } from '../stores/runtime.ts'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { computed } from 'vue'
+import {
+  getBookLearning,
+  getBookTaskSettings,
+  getNewWordLimit,
+  migrateLegacyFsrsToBookLearning,
+  normalizeLearningWord,
+  selectUnitTaskWords,
+  refreshUnitBookProgress,
+} from '../utils/bookLearning'
 
-export function useWordOptions() {
+/**
+ * Word actions normally apply to the selected study book. Detail pages may
+ * supply their displayed book instead; its persisted book-list entry wins over
+ * a transient edit clone with the same id.
+ */
+export function useWordOptions(learningDict?: () => Dict | undefined) {
   const store = useBaseStore()
+
+  function getLearningDict(): Dict {
+    const requested = learningDict?.()
+    if (!requested) return store.sdict
+    return store.word.bookList.find(book => isDictIdMatch(book, requested.id)) ?? requested
+  }
 
   function isWordCollect(val: Word) {
     return !!store.collectWord.words.find(v => v.word.toLowerCase() === val.word.toLowerCase())
@@ -29,17 +49,18 @@ export function useWordOptions() {
   }
 
   function isWordSimple(val: Word) {
-    return !!store.knownWordsSet.has(val.word.toLowerCase())
+    return getBookLearning(getLearningDict()).masteredWords.includes(normalizeLearningWord(val.word))
   }
 
   function toggleWordSimple(val: Word) {
-    let rIndex = store.knownWords.findIndex(v => v === val.word.toLowerCase())
+    const learning = getBookLearning(getLearningDict())
+    const word = normalizeLearningWord(val.word)
+    let rIndex = learning.masteredWords.findIndex(v => v === word)
     if (rIndex > -1) {
-      store.known.words.splice(rIndex, 1)
+      learning.masteredWords.splice(rIndex, 1)
     } else {
-      store.known.words.push(val)
+      learning.masteredWords.push(word)
     }
-    store.known.length = store.known.words.length
   }
 
   function delWrongWord(val: Word) {
@@ -51,11 +72,12 @@ export function useWordOptions() {
   }
 
   function delSimpleWord(val: Word) {
-    let rIndex = store.known.words.findIndex(v => v.word.toLowerCase() === val.word.toLowerCase())
+    const learning = getBookLearning(getLearningDict())
+    const word = normalizeLearningWord(val.word)
+    let rIndex = learning.masteredWords.findIndex(v => v === word)
     if (rIndex > -1) {
-      store.known.words.splice(rIndex, 1)
+      learning.masteredWords.splice(rIndex, 1)
     }
-    store.known.length = store.known.words.length
   }
 
   function getCollectibleDicts(excludeDictId?: string) {
@@ -139,8 +161,10 @@ export function useArticleOptions() {
 
 export function getCurrentStudyWord(): TaskWords {
   const store = useBaseStore()
-  let data: TaskWords = { new: [], review: [] }
   let dict = store.sdict
+  const start = Math.min(Math.max(Number(dict.lastLearnIndex) || 0, 0), dict.words.length)
+  let data: TaskWords = { new: [], review: [], startIndex: start, endIndex: start }
+  if (dict.library) data.libraryVersion = dict.library.version
   let isTest = false
   let words = dict.words.slice()
   if (isTest) {
@@ -150,32 +174,48 @@ export function getCurrentStudyWord(): TaskWords {
   }
 
   if (words?.length) {
+    const learning = getBookLearning(dict)
+    // A dict's source words are only present after it has been selected. This
+    // is the first point where legacy card ownership can be established safely.
+    migrateLegacyFsrsToBookLearning(dict, store.fsrsData)
     const settingStore = useSettingStore()
+    data.settings = getBookTaskSettings(dict, settingStore.wordReviewRatio)
     //忽略列表：简单词或已掌握
-    const ignoreSet = [store.allIgnoreWordsSet, store.knownWordsSet][settingStore.ignoreSimpleWord ? 0 : 1]
+    const ignoreSet = new Set([
+      ...[store.allIgnoreWordsSet, store.knownWordsSet][settingStore.ignoreSimpleWord ? 0 : 1],
+      ...learning.skippedWords.map(normalizeLearningWord),
+    ])
     const perDay = dict.perDayStudyNumber
-    const start = isTest ? 1 : dict.lastLearnIndex
-    const complete = isTest ? true : dict.complete
-    const isEnd = start >= dict.length - 1 && dict.length !== 1
-    const reviewRatio = settingStore.wordReviewRatio
+    if (dict.units?.length) refreshUnitBookProgress(dict, ignoreSet)
+    const taskStart = isTest ? 1 : start
+    data.startIndex = taskStart
+    const complete = isTest ? true : dict.complete || taskStart >= words.length
+    const isEnd = taskStart >= words.length
+    const reviewRatio = learning.reviewRatio ?? settingStore.wordReviewRatio
 
-    let end = start
-    if (!isEnd) {
+    let end = taskStart
+    if (dict.units?.length) {
+      const unitTask = selectUnitTaskWords(dict, getNewWordLimit(dict), ignoreSet)
+      data.new = unitTask.new
+      data.unitId = learning.selectedUnitId ?? ''
+      data.unitScannedWords = unitTask.scanned
+    } else if (!isEnd) {
       //从start往后取perDay个单词，作为新词
-      for (let i = start; i < words.length; i++) {
+      for (let i = taskStart; i < words.length; i++) {
         let item = words[i]
         if (data.new.length >= perDay) break
-        if (!ignoreSet.has(item.word)) {
+        if (!ignoreSet.has(normalizeLearningWord(item.word))) {
           data.new.push(item)
         }
         end++
       }
     }
+    data.endIndex = end
 
     //如果复习比大于等于1，或者已完成，才生成复习词
     if (reviewRatio >= 1 || complete || isEnd) {
       //Map建立索引，用于查找、包含
-      const wordMap = new Map(words.map(s => [s.word, s]))
+      const wordMap = new Map(words.map(s => [normalizeLearningWord(s.word), s]))
       //复习总数量;如果已结束那么复习比最小是1
       const totalNeed = perDay * (isEnd ? reviewRatio || 1 : reviewRatio)
       const now = Date.now()
@@ -183,46 +223,53 @@ export function getCurrentStudyWord(): TaskWords {
       let waitRemoveFromFsrsData = []
 
       //取 due 到期的单词
-      let reviewWordStrList = Object.entries(store.fsrsData)
+      let reviewWordStrList = Object.entries(store.currentFsrsData)
         .filter(([word, card]) => {
           //1、这里的due字段被json序列化之后又恢复是字符串了，所以要用dayjs比较
           //2、要在当前学习这本词典里面
           //3、不在新词里面
           // console.log(`单词：${word},到期时间：${dayjs(card.due).format('YYYY-MM-DD HH:mm:ss')}`)
-          let isMastered = ignoreSet.has(word)
+          const wordKey = normalizeLearningWord(word)
+          let isMastered = ignoreSet.has(wordKey)
           if (isMastered) {
-            waitRemoveFromFsrsData.push(word)
+            waitRemoveFromFsrsData.push(wordKey)
           }
           return (
-            !isMastered && dayjs(card.due).valueOf() <= now && wordMap.has(word) && !data.new.find(v => v.word === word)
+            !isMastered &&
+            dayjs(card.due).valueOf() <= now &&
+            wordMap.has(wordKey) &&
+            !data.new.find(v => normalizeLearningWord(v.word) === wordKey)
           )
         })
         .sort((a, b) => dayjs(a[1].due).valueOf() - dayjs(b[1].due).valueOf())
         .map(([word]) => word)
 
       waitRemoveFromFsrsData.map(word => {
-        delete store.fsrsData[word]
+        delete store.currentFsrsData[word]
       })
       // console.log('fsrs 里 due 到期单词', reviewWordStrList)
 
       data.review = shuffle(
         reviewWordStrList
           .slice(0, totalNeed)
-          .map(word => wordMap.get(word))
+          .map(word => wordMap.get(normalizeLearningWord(word)))
           .filter(obj => obj)
       )
       //如果数量不够再填充
       if (data.review.length < totalNeed) {
         // 固定填充逻辑
-        let list = words.slice(0, start).reverse()
-        if (complete) list = list.concat(words.slice(end).reverse())
+        const learnedSet = new Set(learning.learnedWords)
+        let list = dict.units?.length
+          ? words.filter(item => learnedSet.has(normalizeLearningWord(item.word))).reverse()
+          : words.slice(0, taskStart).reverse()
+        if (complete && !dict.units?.length) list = list.concat(words.slice(end).reverse())
         // 固定填充复习词需要过滤掉有FSRS记录的
         let set = new Set(
           Array.from(ignoreSet)
-            .concat(Object.keys(store.fsrsData))
-            .concat(data.new.map(v => v.word))
+            .concat(Object.keys(store.currentFsrsData))
+            .concat(data.new.map(v => normalizeLearningWord(v.word)))
         )
-        list = list.filter(item => !set.has(item.word))
+        list = list.filter(item => !set.has(normalizeLearningWord(item.word)))
         data.review = data.review.concat(list.slice(0, totalNeed - data.review.length))
       }
     }

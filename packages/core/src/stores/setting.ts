@@ -71,7 +71,9 @@ export function resolveWordInputMode(
   practiceType: WordPracticeType
 ): WordInputMode {
   const inputStage = resolveWordInputStage(stage, practiceType)
-  return (inputStage && setting.wordInputModeByStage?.[inputStage]) ?? setting.wordInputMode
+  // 自测等选项阶段不属于打字输入方案，不得回退到旧的全局“整词”设置。
+  if (!inputStage) return WordInputMode.Classic
+  return setting.wordInputModeByStage?.[inputStage] ?? setting.wordInputMode
 }
 
 export interface SettingState {

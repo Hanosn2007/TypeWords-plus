@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Word } from '../../types'
+import type { Word } from '../../types'
 import { onMounted, watch } from 'vue'
 import SentenceHightLightWord from './SentenceHightLightWord.vue'
 

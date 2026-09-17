@@ -35,12 +35,15 @@ import {
   RESOURCE_PATH,
   SAVE_DICT_KEY,
 } from '../config/env'
-import { nextTick } from 'vue'
+import { nextTick, toRaw } from 'vue'
 import { Toast } from '@typewords/base'
 import { get } from 'idb-keyval'
 import { nanoid } from 'nanoid'
 import { saveHashSnapshot } from '../composables/useDataSyncPersistence'
 import { withAppBaseURL } from './base-url'
+import { normalizeBookLearning, normalizeBookUnits } from './bookLearning'
+import { loadLibraryBook } from './libraryBooks'
+import { hasVisibleBookUnits } from './libraryContent'
 
 dayjs.extend(duration)
 
@@ -76,6 +79,12 @@ function normalizeStoredDict(val: any): Dict {
   if (Array.isArray(next.articles) && next.articles.length) {
     next.length = next.articles.length
   }
+  if (next.learning) {
+    next.learning = normalizeBookLearning(next.learning)
+  }
+  if (next.units) {
+    next.units = normalizeBookUnits(next.units)
+  }
   return getDefaultDict(checkRiskKey(getDefaultDict(), next))
 }
 
@@ -107,6 +116,10 @@ export async function checkAndUpgradeSaveDict(val: any) {
         await saveHashSnapshot(currentHash1, '')
         return defaultState
       }
+      // The old global "known" list has no book identity. Keep it globally
+      // intact and let the first subsequently loaded current book claim only
+      // its matching words. New saves carry version 1 and never enter this path.
+      const needsLegacyBookLearningMasteryMigration = state.legacyBookLearningMasteryMigrationVersion !== 1
       state.load = false
       let version = Number(data.version)
       // console.log('state', state)
@@ -114,6 +127,7 @@ export async function checkAndUpgradeSaveDict(val: any) {
         checkRiskKey(defaultState, state)
         defaultState.article.bookList = defaultState.article.bookList.map(v => normalizeStoredDict(v))
         defaultState.word.bookList = defaultState.word.bookList.map(v => normalizeStoredDict(v))
+        if (needsLegacyBookLearningMasteryMigration) defaultState.legacyBookLearningMasteryMigrationVersion = 0
         return defaultState
       } else {
         // 版本不匹配时，尽量保留数据而不是直接返回默认状态
@@ -127,6 +141,7 @@ export async function checkAndUpgradeSaveDict(val: any) {
           if (state.article && state.article.bookList && Array.isArray(state.article.bookList)) {
             defaultState.article.bookList = state.article.bookList.map((v: any) => normalizeStoredDict(v))
           }
+          if (needsLegacyBookLearningMasteryMigration) defaultState.legacyBookLearningMasteryMigrationVersion = 0
           return defaultState
         } catch (upgradeError) {
           let currentHash2 = '词典数据升级失败-自动备份'
@@ -273,20 +288,23 @@ export async function checkAndUpgradeSaveSetting(val: any) {
 
 //筛选未自定义的词典，未自定义的词典不需要保存单词，用的时候再下载
 export function shakeCommonDict(n: BaseState): BaseState {
-  let data: BaseState = cloneDeep(n)
-  data.word.bookList.map((v: Dict) => {
-    if (!v.custom && !v.system) v.words = []
+  // Strip downloadable content before cloning, and avoid traversing thousands
+  // of Vue proxies just to serialize a save. The result remains a deep copy.
+  const source = toRaw(n)
+  const word = toRaw(source.word)
+  const article = toRaw(source.article)
+  return cloneDeep({
+    ...source,
+    word: { ...word, bookList: toRaw(word.bookList).map(book => {
+      const raw = toRaw(book)
+      return { ...raw, words: raw.custom || raw.system ? toRaw(raw.words) : [] }
+    }) },
+    article: { ...article, bookList: toRaw(article.bookList).map(book => {
+      const raw = toRaw(book)
+      return { ...raw, articles: raw.custom || raw.system
+        ? toRaw(raw.articles).map(a => ({ ...toRaw(a), sections: [] })) : [] }
+    }) },
   })
-  data.article.bookList.map((v: Dict) => {
-    if (!v.custom && !v.system) v.articles = []
-    else {
-      v.articles.map(a => {
-        //运行时再生成
-        a.sections = []
-      })
-    }
-  })
-  return data
 }
 
 export function isMobile(): boolean {
@@ -392,6 +410,9 @@ export async function sleep(time: number) {
 }
 
 export async function _getDictDataByUrl(val: DictResource, type: DictType = DictType.word): Promise<Dict> {
+  if (type === DictType.word && val.library && !(val as Dict).custom) {
+    return getDefaultDict(await loadLibraryBook(getDefaultDict(val)))
+  }
   // await sleep(2000);
   let dictResourceUrl = ENV.RESOURCE_URL + `dicts/${val.language}/word/${val.url}`
   if (type === DictType.article) {
@@ -675,7 +696,7 @@ export async function loadJsLib(key: string, url: string) {
       // @ts-ignore
       script.onload = () => resolve(window[key])
     }
-    script.onerror = () => reject(key + ' 加载失败')
+    script.onerror = () => reject(new Error(key + ' 加载失败'))
     document.head.appendChild(script)
   })
 }
@@ -739,6 +760,8 @@ export function ensureCustomDictCopy(dict: Dict): Dict {
   const sourceId = normalizeDictId(next.sourceId || next.id)
   next.id = `custom-${nanoid(10)}`
   next.sourceId = sourceId
+  if (next.library && !hasVisibleBookUnits(next)) next.units = undefined
+  next.library = undefined
   next.enName = ''
   next.custom = true
   next.system = false

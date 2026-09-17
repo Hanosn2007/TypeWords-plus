@@ -37,6 +37,7 @@ var allowedSyncTypes = map[string]bool{
 type server struct {
 	db                *sql.DB
 	allowRegistration bool
+	adminUserIDs      map[int64]bool
 }
 
 type apiResponse struct {
@@ -53,8 +54,9 @@ type credentials struct {
 }
 
 type userView struct {
-	ID    int64  `json:"id"`
-	Email string `json:"email"`
+	ID      int64  `json:"id"`
+	Email   string `json:"email"`
+	IsAdmin bool   `json:"is_admin"`
 }
 
 type authView struct {
@@ -86,26 +88,21 @@ func main() {
 	if err := migrate(db); err != nil {
 		log.Fatal(err)
 	}
+	adminUserIDs, err := configuredAdminUserIDs(db, os.Getenv("TYPEWORDS_ADMIN_USER_IDS"))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	s := &server{
 		db:                db,
 		allowRegistration: envBool("ALLOW_REGISTRATION", true),
+		adminUserIDs:      adminUserIDs,
 	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/health", s.health)
-	mux.HandleFunc("POST /api/auth/register", s.register)
-	mux.HandleFunc("POST /api/auth/login", s.login)
-	mux.HandleFunc("GET /api/auth/me", s.withUser(s.me))
-	mux.HandleFunc("POST /api/auth/logout", s.withUser(s.logout))
-	mux.HandleFunc("GET /api/sync/meta", s.withUser(s.syncMeta))
-	mux.HandleFunc("GET /api/sync/data", s.withUser(s.syncData))
-	mux.HandleFunc("PUT /api/sync/data", s.withUser(s.syncUpsert))
 
 	addr := envOr("TYPEWORDS_LISTEN", "127.0.0.1:8080")
 	httpServer := &http.Server{
 		Addr:              addr,
-		Handler:           securityHeaders(mux),
+		Handler:           securityHeaders(s.routes()),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -140,7 +137,13 @@ func migrate(db *sql.DB) error {
 			PRIMARY KEY (user_id, type)
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	if err := migrateLibrary(db); err != nil {
+		return err
+	}
+	return migrateSafeSync(db)
 }
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {
@@ -223,7 +226,7 @@ func (s *server) finishAuth(w http.ResponseWriter, userID int64, email string) {
 		Code:    http.StatusOK,
 		Data: authView{
 			Token: token,
-			User:  userView{ID: userID, Email: email},
+			User:  userView{ID: userID, Email: email, IsAdmin: s.adminUserIDs[userID]},
 		},
 	})
 }
@@ -387,6 +390,7 @@ func (s *server) withUser(next func(http.ResponseWriter, *http.Request, userView
 			writeError(w, http.StatusUnauthorized, "session expired")
 			return
 		}
+		user.IsAdmin = s.adminUserIDs[user.ID]
 		next(w, r, user, tokenHash)
 	}
 }

@@ -23,6 +23,7 @@ export enum Sort {
 }
 
 export enum ShortcutKey {
+  SkipLearnedWord = 'SkipLearnedWord',
   ShowWord = 'ShowWord',
   EditArticle = 'EditArticle',
   Next = 'Next',

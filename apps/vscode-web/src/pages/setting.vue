@@ -129,7 +129,12 @@ useEventListener('keydown', (e: KeyboardEvent) => {
       }
 
       for (const [k, v] of Object.entries(settingStore.shortcutKeyMap)) {
-        if (v === shortcutKey && k !== editShortcutKey) {
+        if (
+          v === shortcutKey &&
+          k !== editShortcutKey &&
+          k !== 'SkipLearnedWord' &&
+          editShortcutKey !== 'SkipLearnedWord'
+        ) {
           settingStore.shortcutKeyMap[editShortcutKey] = DefaultShortcutKeyMap[editShortcutKey]
           return Toast.warning('快捷键重复！')
         }
@@ -157,6 +162,7 @@ function focusShortcutInput() {
 // 快捷键中文名称映射
 function getShortcutKeyName(key: string): string {
   const shortcutKeyNameMap = {
+    SkipLearnedWord: '跳过已学会的重复单词',
     ShowWord: '显示单词',
     EditArticle: '编辑文章',
     Next: '下一个',
@@ -187,6 +193,11 @@ function getShortcutKeyName(key: string): string {
   }
 
   return shortcutKeyNameMap[key] || key
+}
+
+function formatShortcutKey(key: unknown) {
+  const shortcutKey = String(key ?? '')
+  return shortcutKey === 'Space' ? '空格' : shortcutKey
 }
 
 function resetShortcutKeyMap() {
@@ -725,7 +736,7 @@ function removeSbConfig() {
                   <div class="set-key" v-if="editShortcutKey === item[0]">
                     <input
                       ref="shortcutInput"
-                      :value="item[1] ? item[1] : $t('no_shortcut_set')"
+                      :value="item[1] ? formatShortcutKey(item[1]) : $t('no_shortcut_set')"
                       readonly
                       type="text"
                       @blur="handleInputBlur"
@@ -737,7 +748,7 @@ function removeSbConfig() {
                     >
                   </div>
                   <div v-else>
-                    <div v-if="item[1]">{{ item[1] }}</div>
+                    <div v-if="item[1]">{{ formatShortcutKey(item[1]) }}</div>
                     <span v-else>{{ $t('no_shortcut_set') }}</span>
                   </div>
                 </div>

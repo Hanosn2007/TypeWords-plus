@@ -57,26 +57,29 @@ export function useSound(audioSrcList?: string[], audioFileLength?: number) {
     if (audioFileLength2) audioLength.value = audioFileLength2
     audioList.value = []
     for (let i = 0; i < audioLength.value; i++) {
-      audioSrcList2.map(src => audioList.value.push(new Audio(ENV.RESOURCE_URL + src)))
+      audioSrcList2.forEach(src => {
+        const audio = new Audio(new URL(src, ENV.RESOURCE_URL).href)
+        audio.preload = 'auto'
+        audioList.value.push(audio)
+      })
     }
     index.value = 0
   }
 
   function play(volume: number = 100) {
     index.value++
-    if (audioList.value.length > 1 && audioList.value.length !== audioLength.value) {
-      let htmlAudioElement = audioList.value[index.value % audioList.value.length]
-      if (htmlAudioElement) {
-        htmlAudioElement.volume = volume / 100
-        htmlAudioElement.play()
-      }
-    } else {
-      let htmlAudioElement1 = audioList.value[index.value % audioLength.value]
-      if (htmlAudioElement1) {
-        htmlAudioElement1.volume = volume / 100
-        htmlAudioElement1.play()
-      }
-    }
+    const listLength = audioList.value.length
+    if (!listLength) return
+
+    const htmlAudioElement = audioList.value[index.value % listLength]
+    if (!htmlAudioElement) return
+
+    htmlAudioElement.volume = volume / 100
+    // 首次播放时媒体元数据可能尚未加载，此时强制写 currentTime 会在 play() 前抛错。
+    if (htmlAudioElement.currentTime > 0) htmlAudioElement.currentTime = 0
+    void htmlAudioElement.play().catch(error => {
+      console.warn('[useSound] audio playback failed', error)
+    })
   }
 
   return { play, setAudio }

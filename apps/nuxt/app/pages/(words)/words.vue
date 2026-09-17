@@ -26,8 +26,8 @@ import {
   total,
   useNav,
 } from '@typewords/core/utils'
-import type { DictResource, Statistics } from '@typewords/core/types/types.ts'
-import { shallowReactive, watch } from 'vue'
+import type { Dict, DictResource } from '@typewords/core/types/types.ts'
+import { provide, shallowReactive, watch } from 'vue'
 import { getCurrentStudyWord } from '@typewords/core/hooks/dict.ts'
 import { useRuntimeStore } from '@typewords/core/stores/runtime.ts'
 import Book from '@typewords/core/components/Book.vue'
@@ -36,7 +36,9 @@ import { DeleteIcon } from '@typewords/base'
 import PracticeSettingDialog from '@typewords/core/components/word/PracticeSettingDialog.vue'
 import ChangeLastPracticeIndexDialog from '@typewords/core/components/word/ChangeLastPracticeIndexDialog.vue'
 import { useSettingStore } from '@typewords/core/stores/setting.ts'
-import { useFetch } from '@vueuse/core'
+import { useNow } from '@vueuse/core'
+import { useWordCatalog } from '@typewords/core/composables/useWordCatalog.ts'
+import { loadLibraryBook } from '@typewords/core/utils/libraryBooks.ts'
 import {
   APP_NAME,
   AppEnv,
@@ -54,10 +56,15 @@ import ImportBanner from '@typewords/core/components/ImportBanner.vue'
 import ReleaseBanner from '@typewords/core/components/ReleaseBanner.vue'
 import ShufflePracticeSettingDialog from '@typewords/core/components/word/ShufflePracticeSettingDialog.vue'
 import { deleteDict } from '@typewords/core/apis/dict.ts'
+import { getBookLearning, getUnitProgress, getUnitWords, isFollowingStudyUnit } from '@typewords/core/utils/bookLearning.ts'
+import BookLearningSettingsDialog from '@typewords/core/components/word/BookLearningSettingsDialog.vue'
+import BookUnitPanel from '@typewords/core/components/word/BookUnitPanel.vue'
 import { flushStatToStore, usePracticeWordPersistence } from '@typewords/core/composables/usePracticePersistence'
 import { useDataSyncPersistence } from '@typewords/core/composables/useDataSyncPersistence'
-import { WordPracticeMode } from '@typewords/core/types/enum.ts'
-import type { PracticeWordCache } from '@typewords/core/utils/cache.ts'
+import { bookPracticeSettingsKey } from '@typewords/core/composables/bookPracticeSettings.ts'
+import { WordPracticeMode, WordPracticeStage } from '@typewords/core/types/enum.ts'
+import { subscribePracticeWordCache, type PracticeWordCache, type PracticeWordCacheBundle } from '@typewords/core/utils/cache.ts'
+import { collectStudyStatistics, type StudyStatisticsRow } from '@typewords/core/utils/studyStatistics.ts'
 import dayjs from 'dayjs'
 
 const store = useBaseStore()
@@ -69,6 +76,12 @@ const { nav } = useNav()
 const runtimeStore = useRuntimeStore()
 let loading = $ref(true)
 let isSaveData = $ref(false)
+let isSwitchingBook = $ref(false)
+let isChangingUnit = $ref(false)
+let isApplyingBookSettings = $ref(false)
+let showBookLearningSettings = $ref(false)
+let bookSwitchVersion = 0
+const followsUnit = computed(() => isFollowingStudyUnit(store.sdict))
 
 const shouldShowDialogPracticeMode = [WordPracticeMode.Shuffle, WordPracticeMode.ShuffleWordsTest]
 
@@ -76,21 +89,71 @@ useHead({
   title: APP_NAME + ' 单词',
 })
 
-let practiceData = $ref<PracticeWordCache>({
-  taskWords: {
-    new: [],
-    review: [],
+function createEmptyPracticeData(): PracticeWordCache {
+  return {
+    taskWords: {
+      new: [],
+      review: [],
+    },
+    practiceData: null,
+    statStoreData: null,
+  } as any
+}
+
+let practiceData = $ref<PracticeWordCache>(createEmptyPracticeData())
+
+let statisticsBundle = $ref<PracticeWordCacheBundle | null>(null)
+let statisticsReadVersion = 0
+async function refreshStatisticsBundle() {
+  const version = ++statisticsReadVersion
+  try {
+    const bundle = await wordPersistence.getLocalDataCompact()
+    if (version === statisticsReadVersion) statisticsBundle = bundle
+  } catch (error) {
+    console.warn('读取全部词书练习统计失败', error)
+  }
+}
+let stopStatisticsSubscription = () => {}
+const statisticsNow = useNow({ interval: 60_000 })
+
+provide(bookPracticeSettingsKey, {
+  dictId: () => String(store.sdict.id),
+  snapshot: async () => {
+    if (isSwitchingBook || isChangingUnit || isApplyingBookSettings) throw new Error('词书正在更新，请稍后重试。')
+    return { cache: await wordPersistence.getLocalEntryCompact(String(store.sdict.id)) }
   },
-  practiceData: null,
-  statStoreData: null,
-} as any)
+  apply: async (saveSettings, rebuild) => {
+    if (isSwitchingBook || isChangingUnit || isApplyingBookSettings) throw new Error('词书正在更新，请稍后重试。')
+    isApplyingBookSettings = true
+    bookSwitchVersion++
+    try {
+      await saveSettings()
+      if (rebuild) {
+        // Discard this unfinished round without recording it as a completed study session.
+        await wordPersistence.clear(String(store.sdict.id))
+        if (store.sdict.library) Object.assign(store.sdict, await loadLibraryBook(store.sdict))
+        practiceData = createEmptyPracticeData()
+        practiceData.taskWords = getCurrentStudyWord()
+        isSaveData = false
+      }
+    } finally {
+      isApplyingBookSettings = false
+    }
+  },
+})
+
+function restoreTaskUnit(cache: PracticeWordCache) {
+  if (store.sdict.units?.length && typeof cache.taskWords.unitId === 'string') {
+    getBookLearning(store.sdict).selectedUnitId = cache.taskWords.unitId
+  }
+}
 
 async function resetCacheData() {
   isSaveData && flushStatToStore(practiceData.statStoreData)
   isSaveData = false
   practiceData.practiceData = null
   practiceData.statStoreData = null
-  await wordPersistence.clear()
+  await wordPersistence.clear(String(store.sdict.id))
 }
 
 // runtimeStore.globalLoading练习界面，退出时会调用一个保存，可能会卡住。当调用完成再init
@@ -132,20 +195,29 @@ watch(
 )
 
 async function onvisibilitychange() {
-  if (!document.hidden) {
+  if (!document.hidden && !isApplyingBookSettings) {
     //当页面可见时，检查是否需要从远程拉取数据
-    const d = await wordPersistence.fetch()
-    if (d) {
+    const dictId = String(store.sdict.id)
+    const version = bookSwitchVersion
+    const d = await wordPersistence.fetch(dictId)
+    await refreshStatisticsBundle()
+    // 可见性恢复期间用户可能已经切换词书，不能用旧词书的缓存覆盖当前任务。
+    if (!isApplyingBookSettings && version === bookSwitchVersion && String(store.sdict.id) === dictId && d) {
       practiceData = d
+      restoreTaskUnit(d)
+      if (d.practiceMode !== undefined) settingStore.wordPracticeMode = d.practiceMode
       isSaveData = true
     }
   }
 }
 
 async function init() {
+  if (isApplyingBookSettings) return
+  await refreshStatisticsBundle()
+  const version = bookSwitchVersion
   if (AppEnv.CAN_REQUEST) {
     let res = await myDictList({ type: 'word' })
-    if (res.success) {
+    if (res.success && version === bookSwitchVersion) {
       store.setState(Object.assign(store.$state, res.data))
     }
   }
@@ -153,25 +225,21 @@ async function init() {
   document.removeEventListener('visibilitychange', onvisibilitychange)
   document.addEventListener('visibilitychange', onvisibilitychange)
 
+  if (version !== bookSwitchVersion) {
+    loading = false
+    return
+  }
+
+  try {
   let studyIndex = store.word.studyIndex
   if (studyIndex >= 3) {
-    if (!store.sdict.custom && !store.sdict.words.length) {
-      let dictList = await fetch(resourceWrap(DICT_LIST.WORD.ALL)).then(r => r.json())
+    if (!store.sdict.custom && (!store.sdict.words.length || store.sdict.library)) {
       let dict = await _getDictDataByUrl(store.sdict)
-      let r = dictList.find(v => [v.enName, v.id].includes(store.sdict.id))
-      if (r) {
-        store.word.bookList[studyIndex].words = dict.words
-        store.word.bookList[studyIndex].id = r.id
-        store.word.bookList[studyIndex].enName = r.enName
-        store.word.bookList[studyIndex].cover = r.cover
-        store.word.bookList[studyIndex].category = r.category
-        store.word.bookList[studyIndex].tags = r.tags
-        store.word.bookList[studyIndex].url = r.url
-        store.word.bookList[studyIndex].description = r.description
-        store.word.bookList[studyIndex].name = r.name
-      } else {
-        store.word.bookList[studyIndex] = dict
+      if (version !== bookSwitchVersion) {
+        loading = false
+        return
       }
+      Object.assign(store.word.bookList[studyIndex], dict)
       store.word.bookList[studyIndex].length = dict.words.length
       let s = store.word.bookList[studyIndex]
       if (s.lastLearnIndex > s.length) {
@@ -182,20 +250,102 @@ async function init() {
     }
   }
 
+  const dictId = String(store.sdict.id)
   if (store.sdict.words.length) {
-    const d = await wordPersistence.loadLocal()
+    const bookMode = getBookLearning(store.sdict).practiceMode
+    if (bookMode !== undefined) settingStore.wordPracticeMode = bookMode
+    const d = await wordPersistence.loadLocal(dictId)
+    // init 可能与首页切换并发；只更新启动时同一本词书的界面数据。
+    if (version !== bookSwitchVersion || String(store.sdict.id) !== dictId) {
+      loading = false
+      return
+    }
     if (d) {
       practiceData = d
+      restoreTaskUnit(d)
+      if (d.practiceMode !== undefined) settingStore.wordPracticeMode = d.practiceMode
+      isSaveData = true
+    } else {
+      practiceData = createEmptyPracticeData()
+      practiceData.taskWords = getCurrentStudyWord()
+      isSaveData = false
+    }
+  }
+  } catch (error) {
+    Toast.error(error instanceof Error ? error.message : '词书加载失败，请稍后重试')
+  } finally { loading = false }
+}
+
+const learningBooks = $computed(() => store.word.bookList.filter(book => !!book.id && !book.system))
+const unitIgnoredWords = $computed(() => new Set<string>(settingStore.ignoreSimpleWord ? store.simpleWords.map(word => word.trim().toLowerCase()) : []))
+
+function getBookLength(book: Dict) {
+  return Number(book.length) || book.words?.length || 0
+}
+
+function getBookProgress(book: Dict) {
+  const length = getBookLength(book)
+  if (!length) return 0
+  if (book.units?.length) {
+    const progress = getUnitProgress(book, '', unitIgnoredWords)
+    return progress.total ? Math.round(progress.handled / progress.total * 100) : 0
+  }
+  return Math.min(100, Math.round((Math.max(0, Number(book.lastLearnIndex) || 0) / length) * 100))
+}
+
+function getBookProgressLabel(book: Dict) {
+  if (book.complete) return '已学完'
+  if (book.units?.length) return `已处理 ${getBookProgress(book)}%`
+  if (!(Number(book.lastLearnIndex) || 0)) return '尚未开始'
+  return `已学 ${getBookProgress(book)}%`
+}
+
+async function switchLearningBook(book: Dict) {
+  if (isApplyingBookSettings || isSwitchingBook || isChangingUnit || String(book.id) === String(store.sdict.id)) return
+
+  const version = ++bookSwitchVersion
+  isSwitchingBook = true
+  try {
+    // 官方词书在未选中时会卸载单词正文；先补回目标词书，再交给 store 切换当前词书。
+    if (!book.custom && (!book.words.length || book.library)) {
+      const loadedBook = await _getDictDataByUrl(book)
+      if (version !== bookSwitchVersion) return
+      Object.assign(book, loadedBook)
+    }
+
+    if (!book.words.length) {
+      Toast.warning('这本词书没有单词可学习')
+      return
+    }
+
+    await store.changeDict(book)
+    if (version !== bookSwitchVersion || String(store.sdict.id) !== String(book.id)) return
+
+    // loadLocal 会先等待该词书的本地写入队列。未开始的词书只生成自己的新任务，绝不清除其他词书缓存。
+    const cached = await wordPersistence.loadLocal(String(book.id))
+    if (version !== bookSwitchVersion || String(store.sdict.id) !== String(book.id)) return
+
+    const bookMode = getBookLearning(store.sdict).practiceMode
+    if (bookMode !== undefined) settingStore.wordPracticeMode = bookMode
+    practiceData = cached ?? createEmptyPracticeData()
+    if (cached) {
+      restoreTaskUnit(cached)
+      if (cached.practiceMode !== undefined) settingStore.wordPracticeMode = cached.practiceMode
       isSaveData = true
     } else {
       practiceData.taskWords = getCurrentStudyWord()
       isSaveData = false
     }
+  } catch (error) {
+    console.error('切换词书失败', error)
+    Toast.error(error instanceof Error ? error.message : '词书加载失败，请稍后重试')
+  } finally {
+    if (version === bookSwitchVersion) isSwitchingBook = false
   }
-  loading = false
 }
 
 async function startPractice(practiceMode: WordPracticeMode, resetCache: boolean = false): Promise<void> {
+  if (isApplyingBookSettings || isSwitchingBook || isChangingUnit) return
   if (resetCache) await resetCacheData()
 
   if (shouldShowDialogPracticeMode.includes(practiceMode) && !isSaveData) {
@@ -206,7 +356,7 @@ async function startPractice(practiceMode: WordPracticeMode, resetCache: boolean
 
   if (store.sdict.id) {
     if (!resetCache && isSaveData) {
-      const latest = await wordPersistence.loadLocal()
+      const latest = await wordPersistence.loadLocal(String(store.sdict.id))
       if (latest) practiceData = latest
     }
     if (!store.sdict.words.length) {
@@ -226,7 +376,7 @@ async function startPractice(practiceMode: WordPracticeMode, resetCache: boolean
     })
     //把是否是第一次设置为false
     if (settingStore.first) settingStore.first = false
-    nav(WordPracticeModeUrlMap[practiceMode] + '/' + store.sdict.id, {}, practiceData)
+    nav(WordPracticeModeUrlMap[practiceMode] + '/' + store.sdict.id, {}, { ...practiceData, dictId: String(store.sdict.id) })
   } else {
     window.umami?.track('no-dict')
     Toast.warning('请先选择一本词典')
@@ -251,78 +401,40 @@ let showShufflePracticeSettingDialog = $ref(false)
 let showChangeLastPracticeIndexDialog = $ref(false)
 let showPracticeWordListDialog = $ref(false)
 
-type StudyDayRow = Statistics & { dictName: string }
+type StudyDayRow = StudyStatisticsRow
 
 let showStudyDayDialog = $ref(false)
 let selectedStudyDateKey = $ref('')
 let studyDayRecords = $ref<StudyDayRow[]>([])
 
-const allWordStatistics = $computed(() => store.word.bookList.flatMap(book => book.statistics ?? []))
-
-const cacheSpendMs = $computed(() => practiceData.statStoreData?.spend ?? 0)
-
-const todayDateKey = $computed(() => dayjs().format('YYYY-MM-DD'))
-
-/**
- * 缓存记录中每一天对应的学习毫秒数 Map<'YYYY-MM-DD', spendMs>
- * 有 segments 时按片段精确分组，否则退回到 startDate + spend 整体归一天
- */
-const cacheDaySpendMap = $computed((): Map<string, number> => {
-  const st = practiceData.statStoreData
-  const map = new Map<string, number>()
-  if (!st?.spend) return map
-  if (Array.isArray(st.segments) && st.segments.length > 0) {
-    for (const [segStart, segEnd] of st.segments) {
-      const key = dayjs(segStart).format('YYYY-MM-DD')
-      map.set(key, (map.get(key) ?? 0) + (segEnd - segStart))
-    }
-  } else {
-    // 老数据 / 无 segments：全部归到 startDate 那天
-    map.set(dayjs(st.startDate).format('YYYY-MM-DD'), st.spend)
-  }
-  // console.log('map',map,practiceData.statStoreData)
-  return map
-})
-
-const todayCacheMs = $computed(() => cacheDaySpendMap.get(todayDateKey) ?? 0)
+const allWordStatistics = $computed(() => collectStudyStatistics(store.word.bookList, statisticsBundle, WordPracticeStage.Complete))
 
 const calendarHighlightDates = $computed(() => {
   const set = new Set<string>()
   for (const s of allWordStatistics) {
     set.add(dayjs(s.startDate).format('YYYY-MM-DD'))
   }
-  // 把缓存记录中所有出现过的天都高亮（支持跨天）
-  for (const key of cacheDaySpendMap.keys()) {
-    set.add(key)
-  }
   return [...set]
 })
 
-/** 已落库统计总毫秒（全 bookList） */
-const persistedTotalMs = $computed(() => total(allWordStatistics, 'spend'))
-
 const totalSpend = $computed(() => {
-  const sum = persistedTotalMs + cacheSpendMs
+  const sum = total(allWordStatistics, 'spend')
   if (!sum) return 0
   return msToHourMinute(sum)
 })
 
 const todayTotalSpend = $computed(() => {
   const todayPersistedMs = total(
-    allWordStatistics.filter(v => dayjs(v.startDate).isSame(dayjs(), 'day')),
+    allWordStatistics.filter(v => dayjs(v.startDate).isSame(dayjs(statisticsNow.value), 'day')),
     'spend'
   )
-  const sum = todayPersistedMs + todayCacheMs
+  const sum = todayPersistedMs
   if (!sum) return 0
   return msToHourMinute(sum)
 })
 
 const totalDay = $computed(() => {
   const set = new Set(allWordStatistics.map(v => dayjs(v.startDate).format('YYYY-MM-DD')))
-  // 把缓存记录中所有出现过的天都计入（支持跨天）
-  for (const key of cacheDaySpendMap.keys()) {
-    set.add(key)
-  }
   return set.size
 })
 
@@ -330,47 +442,9 @@ const studyDayDialogTitle = $computed(() =>
   selectedStudyDateKey ? `${dayjs(selectedStudyDateKey).format('YYYY年M月D日')} 学习记录` : ''
 )
 
-function isStudyDayKeyToday(dateKey: string) {
-  return dateKey === dayjs().format('YYYY-MM-DD')
-}
-
 function onSelectCalendarDate(dateKey: string) {
   selectedStudyDateKey = dateKey
-  const rows: StudyDayRow[] = []
-  for (const book of store.word.bookList) {
-    for (const stat of book.statistics ?? []) {
-      if (dayjs(stat.startDate).format('YYYY-MM-DD') === dateKey) {
-        rows.push({ ...stat, dictName: book.name })
-      }
-    }
-  }
-  const st = practiceData.statStoreData
-  // 缓存记录跨天时，只要该天在 cacheDaySpendMap 中有记录就展示
-  if (st?.spend && cacheDaySpendMap.has(dateKey)) {
-    const daySpend = cacheDaySpendMap.get(dateKey)!
-    const cacheKeys = [...cacheDaySpendMap.keys()]
-    const keyIdx = cacheKeys.indexOf(dateKey)
-    const isMultiDay = cacheKeys.length > 1
-    // 推算该天在整次练习中的角色（练习未结束，最后一天标为"学习中"而非"学习结束"）
-    let sessionRole: StudyDayRow['sessionRole']
-    if (!isMultiDay) {
-      sessionRole = 'single'
-    } else if (keyIdx === 0) {
-      sessionRole = 'start'
-    } else if (keyIdx === cacheKeys.length - 1) {
-      sessionRole = 'middle' // 最后一天仍在进行中，用 middle 表示
-    } else {
-      sessionRole = 'middle'
-    }
-    rows.push({
-      ...st,
-      spend: daySpend,
-      new: st.newWordNumber,
-      review: st.reviewWordNumber,
-      dictName: store.sdict.name,
-      sessionRole,
-    })
-  }
+  const rows = allWordStatistics.filter(stat => dayjs(stat.startDate).format('YYYY-MM-DD') === dateKey)
   if (!rows.length) return Toast.info('无学习记录')
   studyDayRecords = rows
   showStudyDayDialog = true
@@ -378,7 +452,7 @@ function onSelectCalendarDate(dateKey: string) {
 
 async function goDictDetail(val: DictResource) {
   if (!val.id) return nav('dict-list')
-  runtimeStore.editDict = getDefaultDict(val)
+  runtimeStore.editDict = getDefaultDict(store.word.bookList.find(book => String(book.id) === String(val.id)) ?? val)
   nav('/dict', {})
 }
 
@@ -434,6 +508,29 @@ function check(cb: Function) {
   }
 }
 
+function onBookSettingsSaved() {
+  if (!isSaveData) practiceData.taskWords = getCurrentStudyWord()
+}
+
+async function reviewCurrentUnit() {
+  if (isApplyingBookSettings || isSaveData || isChangingUnit || isSwitchingBook) return
+  const cache = await wordPersistence.loadLocal(String(store.sdict.id))
+  if (cache) {
+    practiceData = cache
+    isSaveData = true
+    Toast.warning('请先继续并完成当前一轮。')
+    return
+  }
+  const unitId = getBookLearning(store.sdict).selectedUnitId
+  if (!unitId) return
+  const ignoreSet = settingStore.ignoreSimpleWord ? store.allIgnoreWordsSet : store.knownWordsSet
+  const review = getUnitWords(store.sdict, unitId).filter(word => !ignoreSet.has(word.word.trim().toLowerCase()))
+  if (!review.length) return Toast.warning('本单元没有可重练的词。')
+  practiceData = createEmptyPracticeData()
+  practiceData.taskWords = { new: [], review, unitId, unitReview: true, unitScannedWords: [] }
+  await startPractice(WordPracticeMode.Review)
+}
+
 async function savePracticeSetting() {
   await resetCacheData()
   await store.changeDict(runtimeStore.editDict)
@@ -470,6 +567,7 @@ async function onShufflePracticeSettingOk(setting: ShufflePracticeSetting) {
 }
 
 async function saveLastPracticeIndex(e) {
+  if (store.sdict.units?.length) return
   runtimeStore.editDict.lastLearnIndex = e
   // runtimeStore.editDict.complete = e >= runtimeStore.editDict.length - 1
   showChangeLastPracticeIndexDialog = false
@@ -479,7 +577,7 @@ async function saveLastPracticeIndex(e) {
   Toast.success('修改成功')
 }
 
-const { data: recommendDictList, isFetching } = useFetch(resourceWrap(DICT_LIST.WORD.RECOMMENDED)).json()
+const { data: recommendDictList, isFetching } = useWordCatalog(true)
 
 const systemPracticeText = $computed(() => {
   if (settingStore.wordPracticeMode === WordPracticeMode.Free) {
@@ -494,9 +592,13 @@ const systemPracticeText = $computed(() => {
 let isOldHost = $ref(false)
 onMounted(() => {
   isOldHost = window.location.host === Old_Host
+  stopStatisticsSubscription = subscribePracticeWordCache(() => { void refreshStatisticsBundle() })
+  void refreshStatisticsBundle()
 })
 
 onUnmounted(() => {
+  stopStatisticsSubscription()
+  statisticsReadVersion++
   document.removeEventListener('visibilitychange', onvisibilitychange)
 })
 </script>
@@ -510,6 +612,34 @@ onUnmounted(() => {
       <a class="mr-4" :href="`${Origin}/words?from_old_site=1`">{{ Origin }}</a
       >当前 2study.top 域名将在 7 月 3 号停止使用
     </div>
+
+    <section v-if="learningBooks.length" class="card mb-4 p-4 md:p-5" aria-labelledby="learning-books-title">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <h2 id="learning-books-title" class="title mb-0">正在学习的词书</h2>
+        <span v-if="isSwitchingBook" class="text-sm color-gray-500" role="status">正在切换…</span>
+      </div>
+      <div class="flex gap-3 overflow-x-auto pb-1" aria-label="切换正在学习的词书">
+        <button
+          v-for="book in learningBooks"
+          :key="String(book.id)"
+          type="button"
+          class="learning-book-card shrink-0 text-left"
+          :class="String(book.id) === String(store.sdict.id) && 'is-selected'"
+          :aria-pressed="String(book.id) === String(store.sdict.id)"
+          :disabled="isSwitchingBook || isChangingUnit"
+          @click="switchLearningBook(book)"
+        >
+          <span class="block font-semibold truncate">{{ book.name }}</span>
+          <span class="block text-xs color-gray-500 mt-1">{{ getBookProgressLabel(book) }}</span>
+          <span class="block text-xs color-gray-500 mt-1">{{ book.units?.length ? getUnitProgress(book, '', unitIgnoredWords).handled : book.lastLearnIndex }} / {{ getBookLength(book) }} 词</span>
+          <span class="learning-book-progress mt-2" aria-hidden="true">
+            <span :style="{ width: `${getBookProgress(book)}%` }"></span>
+          </span>
+        </button>
+      </div>
+    </section>
+
+    <BookUnitPanel :disabled="isSaveData || isSwitchingBook || isApplyingBookSettings" @changed="onBookSettingsSaved" @review="reviewCurrentUnit" @busy="isChangingUnit = $event" />
 
     <div class="card flex flex-col md:flex-row gap-4">
       <div class="flex-1 flex flex-col justify-between">
@@ -525,10 +655,10 @@ onUnmounted(() => {
         <template v-if="store.sdict.id">
           <div class="mt-4 space-y-2">
             <div class="text-sm flex justify-between">
-              <span v-opacity="store.sdict.id && store.sdict.lastLearnIndex < store.sdict.length">
+              <span v-opacity="store.sdict.id && !followsUnit && store.sdict.lastLearnIndex < store.sdict.length">
                 {{ $t('estimated_completion') }}：{{
                   _getAccomplishDate(
-                    store.sdict.words.length - store.sdict.lastLearnIndex,
+                    store.sdict.words.length - store.currentStudyHandledCount,
                     store.sdict.perDayStudyNumber
                   )
                 }}
@@ -538,17 +668,21 @@ onUnmounted(() => {
 
             <div class="text-sm flex justify-between">
               <span>{{ progressTextLeft }}</span>
-              <span> {{ store.sdict?.lastLearnIndex }} / {{ store.sdict.length }} 词</span>
+              <span> {{ store.sdict.units?.length ? '已处理 ' : '' }}{{ store.currentStudyHandledCount }} / {{ store.sdict.length }} 词</span>
             </div>
           </div>
           <div class="flex items-center mt-4 gap-4">
             <BaseButton type="info" size="small" @click="router.push('/dict-list')">
               <div class="center gap-1">
                 <IconFluentArrowSwap20Regular />
-                <span>{{ $t('select_dict') }}</span>
+                <span>更多词书</span>
               </div>
             </BaseButton>
+            <BaseButton type="info" size="small" @click="showBookLearningSettings = true">
+              当前词书设置
+            </BaseButton>
             <PopConfirm
+              v-if="!store.sdict.units?.length"
               :disabled="!isSaveData"
               title="当前存在未完成的学习任务，修改会重新生成学习任务，是否继续？"
               @confirm="check(() => (showChangeLastPracticeIndexDialog = true))"
@@ -570,13 +704,13 @@ onUnmounted(() => {
           <BaseButton id="step1" type="primary" size="large" @click="router.push('/dict-list')">
             <div class="center gap-1">
               <IconFluentAdd16Regular />
-              <span>{{ $t('select_dict') }}</span>
+              <span>添加词书</span>
             </div>
           </BaseButton>
         </div>
       </div>
       <div class="flex-1 mt-4 md:mt-0" :class="!store.sdict.id && 'opacity-30 cursor-not-allowed'">
-        <div class="flex justify-between">
+        <div class="flex flex-wrap gap-3 justify-between">
           <div class="flex items-center gap-2">
             <div class="p-2 center rounded-full bg-white">
               <IconFluentStar20Filled class="text-lg color-amber" />
@@ -589,18 +723,12 @@ onUnmounted(() => {
             }}</span>
           </div>
           <div class="flex gap-1 items-center" v-if="store.sdict.id">
-            {{ $t('daily_goal') }}
+            每轮新词
             <div style="color: #ac6ed1" class="bg-third px-2 h-10 flex center text-2xl rounded">
-              {{ store.sdict.id ? store.sdict.perDayStudyNumber : 0 }}
+              {{ followsUnit ? '跟随单元' : store.sdict.perDayStudyNumber }}
             </div>
-            {{ $t('words_count') }}
-            <PopConfirm
-              :disabled="!isSaveData"
-              title="当前存在未完成的学习任务，修改会重新生成学习任务，是否继续？"
-              @confirm="check(() => (showPracticeSettingDialog = true))"
-            >
-              <BaseButton type="info" size="small">{{ $t('change') }}</BaseButton>
-            </PopConfirm>
+            <span v-if="!followsUnit">{{ $t('words_count') }}</span>
+            <BaseButton type="info" size="small" :disabled="isSwitchingBook" @click="showBookLearningSettings = true">{{ $t('change') }}</BaseButton>
           </div>
         </div>
         <div class="flex mt-4 justify-between">
@@ -620,7 +748,7 @@ onUnmounted(() => {
             <BaseButton
               size="large"
               :type="settingStore.wordPracticeMode !== WordPracticeMode.Free ? 'orange' : 'primary'"
-              :disabled="!store.sdict.id"
+              :disabled="!store.sdict.id || isSwitchingBook || isChangingUnit"
               :loading="loading"
               @click="systemPractice"
             >
@@ -832,9 +960,11 @@ onUnmounted(() => {
     :wordPracticeMode="editingWordPracticeMode"
   />
 
+  <BookLearningSettingsDialog v-model="showBookLearningSettings" />
+
   <Dialog v-model="showStudyDayDialog" :title="studyDayDialogTitle" :footer="false" :padding="true">
     <div
-      v-if="!studyDayRecords.length && !(isStudyDayKeyToday(selectedStudyDateKey) && todayCacheMs > 0)"
+      v-if="!studyDayRecords.length"
       class="text-gray-500 py-6 text-center"
     >
       当日无学习记录
@@ -843,6 +973,7 @@ onUnmounted(() => {
       <li v-for="(row, idx) in studyDayRecords" :key="idx" class="border-b border-gray-200 pb-3 last:border-0">
         <div class="flex items-center gap-2">
           <span class="font-medium">{{ row.dictName }}</span>
+          <span v-if="row.pending" class="text-xs text-gray-500">未完成练习</span>
           <span
             v-if="row.sessionRole && row.sessionRole !== 'single'"
             class="text-xs px-1.5 py-0.5 rounded-full"
@@ -856,8 +987,8 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="text-sm text-gray-600 mt-1">
-          时长 {{ msToHourMinute(row.spend) }} · 新学 {{ row.new }} · 复习 {{ row.review }} · 错词 {{ row.wrong }}
-          <template v-if="row.total"> · 共 {{ row.total }} 词</template>
+          当日时长 {{ msToHourMinute(row.spend) }} · 本轮新词 {{ row.new }} · 本轮复习 {{ row.review }} · 本轮错词 {{ row.wrong }}
+          <template v-if="row.total"> · 本轮共 {{ row.total }} 词</template>
         </div>
       </li>
     </ul>
@@ -875,6 +1006,35 @@ onUnmounted(() => {
 
   .txt {
     @apply color-gray-500;
+  }
+}
+
+.learning-book-card {
+  @apply w-44 rounded-xl p-3 border border-gray-200 bg-[var(--bg-history)] transition-colors;
+
+  &:hover:not(:disabled) {
+    @apply border-[#409eff];
+  }
+
+  &:focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-[#409eff];
+  }
+
+  &:disabled {
+    @apply opacity-60 cursor-wait;
+  }
+
+  &.is-selected {
+    @apply border-[#409eff];
+    background: rgba(64, 158, 255, 0.1);
+  }
+}
+
+.learning-book-progress {
+  @apply block h-1.5 overflow-hidden rounded-full bg-gray-200;
+
+  > span {
+    @apply block h-full rounded-full bg-[#409eff] transition-all;
   }
 }
 

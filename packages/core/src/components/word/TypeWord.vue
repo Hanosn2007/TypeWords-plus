@@ -52,6 +52,7 @@ interface IProps {
   word: Word
   question?: Question
   initialWrongTimes?: number
+  beforePracticeShortcut?: (event: KeyboardEvent) => boolean
 }
 
 const props = withDefaults(defineProps<IProps>(), {
@@ -82,6 +83,7 @@ let wholeSoftError = $ref(false)
 let wholeCorrectionPending = false
 let wholeAutoRearmed = false
 let wholeInputTipKey = ''
+let wholeInputNavigationSpaceHeld = false
 //输入锁定，因为跳转到下一个单词有延时，如果重复在延时期间内重复输入，导致会跳转N次
 let inputLock = false
 let waitClear = false
@@ -192,9 +194,9 @@ function resetState(trigger: WordPlayTrigger) {
   focusWholeInput()
 }
 
-// 监听输入变化，更新当前单词信息
+// 同步输入和锁定状态，供全局空格导航判断使用。
 watch(
-  () => input,
+  () => [input, inputLock],
   () => {
     updateCurrentWordInfo()
   }
@@ -204,7 +206,13 @@ function onKeyUp(e: KeyboardEvent) {
   hideWord()
 }
 
+function restoreWholeInputFocusOnVisible() {
+  if (document.visibilityState !== 'visible') return
+  window.setTimeout(focusWholeInput, 180)
+}
+
 function onKeyDown(e: KeyboardEvent) {
+  if (wholeInputEnabled.value && !wholeInputFocused.value && !inputLock) return
   switch (e.key) {
     case 'Backspace':
       del()
@@ -217,6 +225,8 @@ useOnKeyboardEventListener(onKeyDown, onKeyUp)
 onMounted(() => {
   // 初始化当前单词信息
   updateCurrentWordInfo()
+  focusWholeInput()
+  document.addEventListener('visibilitychange', restoreWholeInputFocusOnVisible)
 
   emitter.on(EventKey.resetWord, onResetWord)
   emitter.on(EventKey.onTyping, onTyping)
@@ -228,6 +238,8 @@ function onResetWord() {
 
 onUnmounted(() => {
   clearJumpTimer()
+  clearWholeInputNavigationSpace()
+  document.removeEventListener('visibilitychange', restoreWholeInputFocusOnVisible)
   emitter.off(EventKey.resetWord, onResetWord)
   emitter.off(EventKey.onTyping, onTyping)
 })
@@ -335,8 +347,8 @@ function submitWholeInput(options: { countFailure: boolean }) {
   }
 }
 
-function onWholeInput(e: Event) {
-  input = (e.target as HTMLInputElement).value
+function updateWholeInput(value: string) {
+  input = value
   wholeSoftError = false
   const targetLength = props.word.word.length
   if (wholeCorrectionPending && input.length < targetLength) {
@@ -345,6 +357,20 @@ function onWholeInput(e: Event) {
   if (settingStore.wholeInputSubmitMode !== WholeInputSubmitMode.Auto || input.length !== targetLength) return
 
   submitWholeInput({ countFailure: !wholeCorrectionPending || wholeAutoRearmed })
+}
+
+function onWholeInput(e: Event) {
+  const target = e.target as HTMLInputElement
+  const inputEvent = e as InputEvent
+  if (
+    wholeInputNavigationSpaceHeld &&
+    inputEvent.inputType?.startsWith('insert') &&
+    inputEvent.data === ' '
+  ) {
+    target.value = input
+    return
+  }
+  updateWholeInput(target.value)
 }
 
 function onWholeInputEnter() {
@@ -431,6 +457,7 @@ const wholeInputEnabled = computed(
     ].includes(settingStore.wordPracticeType)
 )
 
+// 只在可见整词输入框实际获得焦点时关闭旧打字监听，不影响选项阶段和用户主动点击其他控件。
 useDisableEventListener(() => wholeInputFocused.value && wholeInputEnabled.value)
 
 function focusWholeInput() {
@@ -438,8 +465,28 @@ function focusWholeInput() {
   nextTick(() => wholeInputEl.value?.focus())
 }
 
+function clearWholeInputNavigationSpace() {
+  wholeInputNavigationSpaceHeld = false
+}
+
+function holdWholeInputNavigationSpace() {
+  wholeInputNavigationSpaceHeld = true
+}
+
 function onWholeInputKeydown(e: KeyboardEvent) {
   e.stopPropagation()
+  if (!e.isComposing && e.keyCode !== 229 && !e.repeat && props.beforePracticeShortcut?.(e)) {
+    e.preventDefault()
+    return
+  }
+  if (e.code === 'Space') {
+    if (e.repeat) {
+      e.preventDefault()
+      return
+    }
+    // 非重复 keydown 代表新的物理按键，即使上次 keyup 丢失也不应吞掉合法空格。
+    clearWholeInputNavigationSpace()
+  }
   // 与全局监听复用同一套用户快捷键映射；常见编辑快捷键仍交给原生输入框。
   if ((e.ctrlKey || e.metaKey) && ['KeyC', 'KeyA', 'KeyD'].includes(e.code)) return
   if (
@@ -466,6 +513,7 @@ function onWholeInputKeydown(e: KeyboardEvent) {
 
 function onWholeInputKeyup(e: KeyboardEvent) {
   e.stopPropagation()
+  if (e.code === 'Space') clearWholeInputNavigationSpace()
   if (wholeInputTipKey && wholeInputTipKey === (e.code || e.key)) {
     wholeInputTipKey = ''
     hideWord()
@@ -480,6 +528,9 @@ async function onTyping(e: KeyboardEvent) {
   if (waitClear) {
     return
   }
+
+  // 整词框被用户主动移开焦点后，不再把页面按键当作单词输入。
+  if (wholeInputEnabled.value && !inputLock) return
 
   if (isWordTest) {
     if (e.code === 'Space') {
@@ -506,6 +557,7 @@ async function onTyping(e: KeyboardEvent) {
   if (inputLock) {
     //判断是否是空格键以便切换到下一个
     if (e.code === 'Space') {
+      holdWholeInputNavigationSpace()
       //正确时就切换到下一个
       if (right) {
         clearJumpTimer()
@@ -930,6 +982,7 @@ defineExpose({
   showWordResult,
   wrongTimes,
   isWholeInputComplete: () => showWordResult.value && inputLock,
+  hasStartedAnswer: () => Boolean(input || wrong || inputLock || showWordResult.value || completeSelect || wrongTimes.value),
   getCollectAnchor: () => collectAnchorRef.value,
 })
 </script>
@@ -1042,6 +1095,8 @@ defineExpose({
           </template>
         </div>
       </Tooltip>
+
+      <slot name="learning-notice" />
 
       <!--      单词操作按钮-->
       <div class="mt-2 flex gap-4">

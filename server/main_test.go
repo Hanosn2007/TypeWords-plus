@@ -19,19 +19,13 @@ func newTestServer(t *testing.T) (*server, *http.ServeMux) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
+	db.SetMaxOpenConns(1)
 	if err := migrate(db); err != nil {
 		t.Fatal(err)
 	}
 
 	s := &server{db: db, allowRegistration: true}
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /api/auth/register", s.register)
-	mux.HandleFunc("POST /api/auth/login", s.login)
-	mux.HandleFunc("GET /api/auth/me", s.withUser(s.me))
-	mux.HandleFunc("GET /api/sync/meta", s.withUser(s.syncMeta))
-	mux.HandleFunc("GET /api/sync/data", s.withUser(s.syncData))
-	mux.HandleFunc("PUT /api/sync/data", s.withUser(s.syncUpsert))
-	return s, mux
+	return s, s.routes()
 }
 
 func requestJSON(t *testing.T, handler http.Handler, method, path, token string, payload interface{}) *httptest.ResponseRecorder {
@@ -123,27 +117,32 @@ func TestSyncDataIsIsolatedByUser(t *testing.T) {
 	first := registerTestUser(t, mux, "first@example.com")
 	second := registerTestUser(t, mux, "second@example.com")
 
-	upsert := requestJSON(t, mux, http.MethodPut, "/api/sync/data", first.Token, map[string]interface{}{
+	upsert := requestJSON(t, mux, http.MethodPut, "/api/sync/snapshot", first.Token, map[string]interface{}{
+		"expectedRevision": 0,
+		"requestId":        "isolation-request-0001",
 		"rows": []map[string]interface{}{
 			{
 				"type":         "dict",
 				"data":         map[string]interface{}{"name": "first-user"},
 				"data_version": 4,
 			},
+			{"type": "setting", "data": nil, "data_version": 25},
+			{"type": "practice_word", "data": nil, "data_version": 1},
+			{"type": "practice_article", "data": nil, "data_version": 1},
 		},
 	})
 	if upsert.Code != http.StatusOK {
 		t.Fatalf("upsert status = %d: %s", upsert.Code, upsert.Body.String())
 	}
 
-	firstData := requestJSON(t, mux, http.MethodGet, "/api/sync/data?types=dict", first.Token, nil)
-	rows := decodeResponse[[]syncRow](t, firstData)
-	if len(rows) != 1 || string(rows[0].Data) != `{"name":"first-user"}` {
+	firstData := requestJSON(t, mux, http.MethodGet, "/api/sync/snapshot", first.Token, nil)
+	rows := decodeResponse[syncSnapshot](t, firstData).Rows
+	if len(rows) != 4 || string(rows[0].Data) != `{"name":"first-user"}` {
 		t.Fatalf("unexpected first user rows: %+v", rows)
 	}
 
-	secondData := requestJSON(t, mux, http.MethodGet, "/api/sync/data?types=dict", second.Token, nil)
-	secondRows := decodeResponse[[]syncRow](t, secondData)
+	secondData := requestJSON(t, mux, http.MethodGet, "/api/sync/snapshot", second.Token, nil)
+	secondRows := decodeResponse[syncSnapshot](t, secondData).Rows
 	if len(secondRows) != 0 {
 		t.Fatalf("second user received first user data: %+v", secondRows)
 	}

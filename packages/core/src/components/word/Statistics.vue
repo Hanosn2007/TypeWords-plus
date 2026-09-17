@@ -21,7 +21,9 @@ const Dialog = defineAsyncComponent(() => import('@typewords/base/Dialog'))
 
 const props = defineProps({
   loading: Boolean,
+  canUndoDuplicateSkip: Boolean,
 })
+const emit = defineEmits<{ undoDuplicateSkip: [] }>()
 const store = useBaseStore()
 const settingStore = useSettingStore()
 const statStore = usePracticeStore()
@@ -61,7 +63,7 @@ watch([model, () => props.loading], async newVal => {
   }
 })
 
-const close = () => (model.value = false)
+const close = () => { if (!props.loading) model.value = false }
 
 useEvents([
   //特意注释掉，因为在练习界面用快捷键下一组时，需要判断是否在结算界面
@@ -71,14 +73,14 @@ useEvents([
 ])
 
 function options(emitType: string) {
+  if (props.loading) return
   emitter.emit(EventKey[emitType])
   close()
 }
 
 // 计算学习进度百分比
 const studyProgress = $computed(() => {
-  if (!store.sdict.length) return 0
-  return Math.round((store.sdict.lastLearnIndex / store.sdict.length) * 100)
+  return store.currentStudyProgress
 })
 
 // 计算正确率
@@ -140,6 +142,11 @@ const encouragementText = $computed(() => {
             </div>
           </div>
 
+          <div v-if="statStore.skippedWordNumber" class="text-center text-sm">
+            本轮跳过 {{ statStore.skippedWordNumber }} 个重复词（未计入学习或掌握）
+            <button v-if="canUndoDuplicateSkip && !loading" class="ml-2 underline" @click="emit('undoDuplicateSkip')">撤销最后一次跳过</button>
+          </div>
+
           <div>
             <div class="font-medium text-lg text-center mb-2">错词统计</div>
             <div class="flex gap-space flex-wrap max-w-150">
@@ -186,7 +193,7 @@ const encouragementText = $computed(() => {
                 </div>
                 <Progress :percentage="studyProgress" size="large" :show-text="false" />
                 <div class="flex justify-between text-sm font-medium mt-4">
-                  <span>{{ $t('learned') }}: {{ store.sdict.lastLearnIndex }}</span>
+                  <span>{{ store.sdict.units?.length ? '已处理' : $t('learned') }}: {{ store.currentStudyHandledCount }}</span>
                   <span>{{ $t('total_words') }}: {{ store.sdict.length }}</span>
                 </div>
               </div>
@@ -214,7 +221,7 @@ const encouragementText = $computed(() => {
                 {{ store.sdict.complete ? $t('start_from_beginning') : $t('another_group') }}
               </div>
             </BaseButton>
-            <BaseButton @click="$router.back">
+            <BaseButton @click="$router.push('/words')">
               <div class="center gap-2">
                 <IconFluentHome20Regular />
                 {{ $t('back_to_home') }}

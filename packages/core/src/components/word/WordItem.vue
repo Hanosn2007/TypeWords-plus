@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Word } from '../../types'
+import type { Dict, Word } from '../../types'
 import { usePlayWordAudio } from '../../hooks/sound.ts'
 import { BaseIcon, Tooltip, VolumeIcon } from '@typewords/base'
 import { useWordOptions } from '../../hooks/dict.ts'
@@ -19,6 +19,8 @@ const props = withDefaults(
     active?: boolean
     disabled?: boolean
     excludeDictId?: string
+    /** The displayed book whose learning state should receive the mark. */
+    learningDict?: Dict
   }>(),
   {
     showTranslate: true,
@@ -34,7 +36,7 @@ const props = withDefaults(
 
 const playWordAudio = usePlayWordAudio()
 
-const { isWordSimple, toggleWordSimple } = useWordOptions()
+const { isWordSimple, toggleWordSimple } = useWordOptions(() => props.learningDict)
 
 function openCollectPicker(e: MouseEvent) {
   openWordCollectPicker(props.item, e.currentTarget as HTMLElement, {

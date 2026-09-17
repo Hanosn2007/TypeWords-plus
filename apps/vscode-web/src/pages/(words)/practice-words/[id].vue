@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { loadWordCatalog } from '@typewords/core/utils/libraryBooks.ts'
 import { onMounted, onUnmounted, provide, watch } from 'vue'
 import Statistics from '@typewords/core/components/word/Statistics.vue'
 import { emitter, EventKey, useEvents } from '@typewords/core/utils/eventBus.ts'
@@ -37,7 +38,6 @@ import { AppEnv, DICT_LIST, LIB_JS_URL, TourConfig, WordPracticeModeStageMap } f
 import { watchOnce } from '@vueuse/core'
 import { addStat, setUserDictProp } from '@typewords/core/apis'
 import GroupList from '@typewords/core/components/word/GroupList.vue'
-import { getPracticeWordCacheLocal } from '@typewords/core/utils/cache.ts'
 import { useDataSyncPersistence } from '@typewords/core/composables/useDataSyncPersistence.ts'
 import { usePracticeWordPersistence } from '@typewords/core/composables/usePracticePersistence.ts'
 import { ShortcutKey, WordPracticeMode, WordPracticeStage, WordPracticeType } from '@typewords/core/types/enum.ts'
@@ -46,6 +46,11 @@ import { createEmptyCard, Rating } from 'ts-fsrs'
 import { useGetGradeByWrongTimes, useNextCard } from '@typewords/core/hooks/fsrs.ts'
 import WordMarkPickList, { type WordMarkPickResult } from '@typewords/core/components/word/WordMarkPickList.vue'
 import { buildQuestion } from '@typewords/core/utils/word-test.ts'
+import {
+  completeBookLearningTask,
+  getBookLearning,
+  normalizeLearningWord,
+} from '@typewords/core/utils/bookLearning.ts'
 import dayjs from 'dayjs'
 
 // -------------
@@ -149,9 +154,10 @@ async function loadDict() {
   if (dictId) {
     //先在自己的词典列表里面找，如果没有再在资源列表里面找
     dict = store.word.bookList.find(v => v.id === dictId)
-    let r = await fetch(resourceWrap(DICT_LIST.WORD.ALL))
-    let dict_list = await r.json()
-    if (!dict) dict = dict_list.flat().find(v => v.id === dictId) as Dict
+    if (!dict) {
+      const dict_list = await loadWordCatalog(resourceWrap(DICT_LIST.WORD.ALL))
+      dict = dict_list.find(v => String(v.id) === String(dictId)) as Dict
+    }
     if (dict && dict.id) {
       //如果是不是自定义词典，就请求数据
       if (!dict.custom) dict = await _getDictDataByUrl(dict)
@@ -159,7 +165,9 @@ async function loadDict() {
         router.push('/words')
         return Toast.warning('没有单词可学习！')
       }
-      store.changeDict(dict)
+      await store.changeDict(dict)
+      const savedPracticeMode = getBookLearning(store.sdict).practiceMode
+      if (savedPracticeMode !== undefined) settingStore.wordPracticeMode = savedPracticeMode
       await initData(null, true)
       loading = false
     } else {
@@ -193,8 +201,9 @@ const onvisibilitychange = async () => {
     runtimeStore.globalLoading = true
     try {
       //todo 这里如果另一台机器学完了，这里的d可能为空
-      const d = await wordPersistence.fetch()
+      const d = await wordPersistence.fetch(String(store.sdict.id))
       if (d) {
+        if (d.practiceMode !== undefined) settingStore.wordPracticeMode = d.practiceMode
         taskWords = Object.assign(taskWords, d.taskWords)
         data = Object.assign(data, d.practiceData)
         statStore.$patch(d.statStoreData)
@@ -231,9 +240,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onvisibilitychange)
-  if (getPracticeWordCacheLocal()) {
-    savePracticeDataIns('onUnmounted')
-  }
+  // savePracticeDataIns already ignores an untouched or completed practice.
+  // Calling it directly avoids the old async cache read being used as a truthy
+  // condition and preserves the current dictionary id in the cache payload.
+  void savePracticeDataIns('onUnmounted')
   timer && clearInterval(timer)
   watchRefList.map(v => v.stop())
 })
@@ -284,7 +294,7 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
   if (init) {
     let d = runtimeStore.routeData
     if (!d) {
-      d = await wordPersistence.load()
+      d = await wordPersistence.load(String(route.params.id ?? store.sdict.id))
     }
     if (!d) {
       initData(getCurrentStudyWord())
@@ -295,6 +305,7 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
       return
     }
     console.log('initData')
+    if (d.practiceMode !== undefined) settingStore.wordPracticeMode = d.practiceMode
     taskWords = Object.assign(taskWords, d.taskWords)
     //这里直接赋值的话，provide后的inject获取不到最新值
     data = getDefaultPracticeData(data, d.practiceData)
@@ -362,6 +373,12 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
     statStore.resumeTimer() // 同时 push 第一条片段 [now, now]
     watchStage(statStore.stage)
     watchPracticeType(settingStore.wordPracticeType)
+  }
+
+  // 纯复习不能把首页同时生成的新词当成已学，也不能推进新词游标。
+  if ([WordPracticeMode.Review, WordPracticeMode.Shuffle].includes(settingStore.wordPracticeMode)) {
+    taskWords.new = []
+    taskWords.endIndex = taskWords.startIndex ?? store.sdict.lastLearnIndex
   }
 
   // 初始化 Question
@@ -493,20 +510,7 @@ async function complete() {
     clearInterval(timer)
 
     //如果 shuffle 数组不为空，就说明是复习，不用修改 lastLearnIndex
-    if (settingStore.wordPracticeMode !== WordPracticeMode.Shuffle) {
-      store.sdict.lastLearnIndex = store.sdict.lastLearnIndex + statStore.newWordNumber
-      // 检查已忽略的单词数量，是否全部完成
-      let ignoreList = [store.allIgnoreWords, store.knownWords][settingStore.ignoreSimpleWord ? 0 : 1]
-      // 忽略单词数
-      const ignoreCount = ignoreList.filter(word =>
-        store.sdict.words.slice(store.sdict.lastLearnIndex).some(w => w.word.toLowerCase() === word)
-      ).length
-      // 如果lastLearnIndex已经超过可学单词数，则判定完成
-      if (store.sdict.lastLearnIndex + ignoreCount >= store.sdict.length) {
-        store.sdict.complete = true
-        store.sdict.lastLearnIndex = store.sdict.length
-      }
-    }
+    if (settingStore.wordPracticeMode !== WordPracticeMode.Shuffle) completeBookLearningTask(store.sdict, taskWords)
 
     // 结算前先将最后一条片段的 end 定格为当前时刻（segments 已是最新，无需临时快照）
     if (!statStore.timerPaused && statStore.segments.length > 0) {
@@ -540,6 +544,7 @@ async function complete() {
         wrong: statStore.wrong,
         new: statStore.newWordNumber,
         review: statStore.reviewWordNumber,
+        skipped: statStore.skippedWordNumber,
         segments: dayKeys.length === 1 ? dayMap.get(dayKeys[0])!.daySegments : undefined,
         sessionRole: 'single' as const,
       }
@@ -551,6 +556,7 @@ async function complete() {
         wrong: statStore.wrong,
         new: statStore.newWordNumber,
         review: statStore.reviewWordNumber,
+        skipped: statStore.skippedWordNumber,
       }
       dayKeys.forEach((dayKey, idx) => {
         const group = dayMap.get(dayKey)!
@@ -589,7 +595,7 @@ async function complete() {
     }
 
     await dataSync.saveDictState(store.$state, { pullWhenRemoteNewer: false })
-    await wordPersistence.clear()
+    await wordPersistence.clear(String(store.sdict.id))
 
     let trackData = {
       funSpend: Date.now() - start,
@@ -775,12 +781,13 @@ function onTypeWrong() {
 
 //设置单词卡片
 function setWordCard(rating: number, wordStr = word.word, times?: number) {
-  let card = store.fsrsData[wordStr]
+  wordStr = normalizeLearningWord(wordStr)
+  let card = store.currentFsrsData[wordStr]
   if (!card) {
     card = createEmptyCard()
   }
   card = nextCard(card, rating)
-  store.fsrsData[wordStr] = card
+  store.currentFsrsData[wordStr] = card
   // console.log(
   //   `更新卡片: 单词：${wordStr}, 模式：${WordPracticeType[settingStore.wordPracticeType]}, 评分: ${Rating[rating]}, 次数：${times}, 卡片: `,
   //   card,
@@ -807,6 +814,8 @@ async function savePracticeDataIns(where?) {
     statStore.segments[statStore.segments.length - 1][1] = Date.now()
   }
   await wordPersistence.save({
+    dictId: String(store.sdict.id),
+    practiceMode: settingStore.wordPracticeMode,
     taskWords,
     practiceData: data,
     statStoreData: statStore.$state,
@@ -832,7 +841,7 @@ function onKeyDown(e: KeyboardEvent) {
 
 function repeat() {
   console.log('重学一遍')
-  wordPersistence.clear()
+  wordPersistence.clear(String(store.sdict.id))
   let temp = cloneDeep(taskWords)
   let ignoreSet = [store.allIgnoreWordsSet, store.knownWordsSet][settingStore.ignoreSimpleWord ? 0 : 1]
   //随机练习单独处理
@@ -840,7 +849,7 @@ function repeat() {
     temp.review = shuffle(temp.review.filter(v => !ignoreSet.has(v.word)))
   } else {
     //将学习进度减回去
-    store.sdict.lastLearnIndex = store.sdict.lastLearnIndex - statStore.newWordNumber
+    store.sdict.lastLearnIndex = taskWords.startIndex ?? store.sdict.lastLearnIndex - statStore.newWordNumber
     //排除已掌握单词
     temp.new = temp.new.filter(v => !ignoreSet.has(v.word))
     temp.review = temp.review.filter(v => !ignoreSet.has(v.word))
@@ -893,7 +902,7 @@ function toggleConciseMode() {
 }
 
 async function continueStudy() {
-  wordPersistence.clear()
+  wordPersistence.clear(String(store.sdict.id))
   let temp = cloneDeep(taskWords)
   let ignoreList = [store.allIgnoreWords, store.knownWords][settingStore.ignoreSimpleWord ? 0 : 1]
   //随机练习单独处理
@@ -906,7 +915,7 @@ async function continueStudy() {
     //这里判断是否显示结算弹框，如果显示了结算弹框的话，就不用加进度了
     if (!isComplete) {
       console.log('没学完，强行跳过')
-      store.sdict.lastLearnIndex = store.sdict.lastLearnIndex + statStore.newWordNumber
+      store.sdict.lastLearnIndex = taskWords.endIndex ?? store.sdict.lastLearnIndex + statStore.newWordNumber
       // 忽略单词数
       const ignoreCount = ignoreList.filter(word => store.sdict.words.some(w => w.word.toLowerCase() === word)).length
       // 如果lastLearnIndex已经超过可学单词数，则判定完成
@@ -933,7 +942,7 @@ async function continueStudy() {
 
 async function jumpToGroup(group: number) {
   window?.umami?.track('jumpToGroup')
-  wordPersistence.clear()
+  wordPersistence.clear(String(store.sdict.id))
   console.log('没学完，强行跳过', group)
   store.sdict.lastLearnIndex = (group - 1) * store.sdict.perDayStudyNumber
   emitter.emit(EventKey.resetWord)
@@ -978,24 +987,35 @@ watch(isIniting, n => {
 })
 
 function onWordMarkPickComplete(result: WordMarkPickResult) {
-  result.know.map(word => {
+  const learning = getBookLearning(store.sdict)
+  const skipped = new Set(result.skipped.map(word => normalizeLearningWord(word.word)))
+  learning.skippedWords = Array.from(new Set([...learning.skippedWords, ...skipped]))
+  data.duplicateSkippedWords = Array.from(new Set([...(data.duplicateSkippedWords ?? []), ...skipped]))
+  statStore.skippedWordNumber = data.duplicateSkippedWords.length
+
+  result.know.filter(word => !skipped.has(normalizeLearningWord(word.word))).map(word => {
     data.ratingMap[word.word.toLowerCase()] = Rating.Good
     data.excludeWords.push(word.word)
   })
-  result.mastered.map(word => {
+  result.mastered.filter(word => !skipped.has(normalizeLearningWord(word.word))).map(word => {
+    const key = normalizeLearningWord(word.word)
+    if (!learning.masteredWords.includes(key)) learning.masteredWords.push(key)
     data.excludeWords.push(word.word)
   })
   console.log(result)
-  if (result.unknown.length > 0) {
+  const unknown = result.unknown.filter(word => !skipped.has(normalizeLearningWord(word.word)))
+  if (unknown.length > 0) {
     data.isTypingWrongWord = true
     settingStore.wordPracticeType = WordPracticeType.FollowWrite
     console.log('当前学完了，但还有错词')
-    data.words = shuffle(cloneDeep(result.unknown))
+    data.words = shuffle(cloneDeep(unknown))
     data.index = 0
     data.wrongWords = []
 
-    data.allWrongWords = data.allWrongWords.concat(result.unknown.map(v => v.word.toLowerCase()))
-    result.unknown.forEach(v => {
+    data.allWrongWords = data.allWrongWords.concat(
+      unknown.map(v => v.word.toLowerCase())
+    )
+    unknown.forEach(v => {
       data.wrongTimesMap[v.word.toLowerCase()] = 1
     })
   } else {

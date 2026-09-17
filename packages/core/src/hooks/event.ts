@@ -3,6 +3,9 @@ import { emitter, EventKey } from '../utils/eventBus'
 import { useSettingStore } from '../stores'
 import { isMobile } from '../utils'
 import { Toast } from '@typewords/base'
+import type { ShortcutKey } from '../types'
+
+type KeyboardEventWindow = Window & { disableEventListener?: boolean }
 
 const CODE_TO_CHAR: Record<string, string> = {
   ...Object.fromEntries('ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(c => [`Key${c}`, c.toLowerCase()])),
@@ -64,6 +67,10 @@ function getSelectedText() {
   return window.getSelection().toString().trim()
 }
 
+function isEditableElement(target: EventTarget | null): target is HTMLElement {
+  return target instanceof HTMLElement && (target.matches('input, textarea, select') || target.isContentEditable)
+}
+
 export function useWindowClick(cb: (e: PointerEvent) => void) {
   const add = () => {
     emitter.on(EventKey.closeOther, cb)
@@ -116,7 +123,7 @@ export function useEventListener(type: string, listener: EventListenerOrEventLis
           input = document.createElement('input')
           input.id = 'typing-listener'
           input.type = 'text'
-          input.autofocus = true
+          input.autofocus = isMobile()
           input.autocomplete = 'off'
           input.autocapitalize = 'off'
           input.autocorrect = false
@@ -139,7 +146,11 @@ export function useEventListener(type: string, listener: EventListenerOrEventLis
           document.body.appendChild(input)
         }
         setTimeout(() => {
-          input.focus()
+          if (!isMobile()) return
+          const activeElement = document.activeElement
+          if (!isEditableElement(activeElement) || activeElement === input) {
+            input.focus()
+          }
         }, 100)
         return input
       }
@@ -217,6 +228,7 @@ export function useEventListener(type: string, listener: EventListenerOrEventLis
       }
 
       const handleFocusRequest = (event: MouseEvent | TouchEvent) => {
+        if (!isMobile()) return
         const target = event.target as HTMLElement | null
         if (!target) return
         if (!window.location.pathname.includes('/practice')) return
@@ -229,6 +241,8 @@ export function useEventListener(type: string, listener: EventListenerOrEventLis
       }
 
       const windowListener = (e: KeyboardEvent) => {
+        // 真实输入框的字符与编辑行为由组件自己处理，避免全局逐字母规则拦截。
+        if (e.target !== hiddenInput && isEditableElement(e.target)) return
         // if (e.code in CODE_TO_CHAR && !e.ctrlKey && !e.metaKey) return
         // console.log('windowListener', Date.now(), e, CODE_TO_CHAR)
         if (e.key === 'Process') {
@@ -301,6 +315,9 @@ export function getShortcutKey(e: KeyboardEvent) {
         shortcutKey += '⬆'
       } else if (e.key === 'ArrowDown') {
         shortcutKey += '⬇'
+      } else if (e.code === 'Space') {
+        // A literal space would be erased by trim() below, and cannot be shown or configured.
+        shortcutKey += 'Space'
       } else {
         shortcutKey += e.key
       }
@@ -332,29 +349,97 @@ export function emitConfiguredShortcutEvents(
   return shortcutEvents
 }
 
-export function useStartKeyboardEventListener() {
+function shouldTreatSpaceAsTyping(e: KeyboardEvent) {
+  if (e.code !== 'Space') return false
+
+  const currentWord = window.__CURRENT_WORD_INFO__
+  return Boolean(
+    currentWord &&
+      ((currentWord.word && currentWord.word.includes(' ') && currentWord.word[currentWord.input.length] === ' ') ||
+        currentWord.inputLock === true)
+  )
+}
+
+export type StartKeyboardEventListenerOptions = {
+  /**
+   * Runs before configured shortcuts for an eligible physical keydown. Return true only
+   * after handling the event; the hook then prevents all ordinary shortcut/navigation work.
+   */
+  beforeShortcut?: (event: KeyboardEvent) => boolean
+}
+
+export function useStartKeyboardEventListener(options: StartKeyboardEventListenerOptions = {}) {
   const settingStore = useSettingStore()
+  let navigationSpaceHeld = false
+
+  const releaseNavigationSpace = () => {
+    navigationSpaceHeld = false
+  }
+
+  const releaseNavigationSpaceWhenHidden = () => {
+    if (document.visibilityState !== 'visible') releaseNavigationSpace()
+  }
+
+  // 快捷键不能依赖隐藏输入框的字符去重，否则输入事件先到时会吞掉同一个物理按键。
+  const onShortcutKeydown = (e: KeyboardEvent) => {
+    if (e.defaultPrevented || (window as KeyboardEventWindow).disableEventListener) return
+    if (isEditableElement(e.target)) return
+    if ((e.ctrlKey || e.metaKey) && ['KeyC', 'KeyA', 'KeyD'].includes(e.code)) return
+    // A space that is part of the current answer must reach the typing flow before
+    // any contextual shortcut gets a chance to consume it.
+    if (shouldTreatSpaceAsTyping(e)) return
+    if (!e.repeat && !e.isComposing && options.beforeShortcut?.(e)) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      return
+    }
+    if (e.code === 'Space') {
+      if (navigationSpaceHeld || e.repeat) {
+        e.preventDefault()
+        return
+      }
+      navigationSpaceHeld = true
+    }
+    emitConfiguredShortcutEvents(e, settingStore.shortcutKeyMap)
+  }
+
+  const onShortcutKeyup = (e: KeyboardEvent) => {
+    if (e.code === 'Space') releaseNavigationSpace()
+  }
+
+  const addShortcutListener = () => window.addEventListener('keydown', onShortcutKeydown, { capture: true })
+  const removeShortcutListener = () => window.removeEventListener('keydown', onShortcutKeydown, { capture: true })
+
+  const addShortcutReleaseListeners = () => {
+    window.addEventListener('keyup', onShortcutKeyup, { capture: true })
+    window.addEventListener('blur', releaseNavigationSpace)
+    document.addEventListener('visibilitychange', releaseNavigationSpaceWhenHidden)
+  }
+
+  const removeShortcutReleaseListeners = () => {
+    window.removeEventListener('keyup', onShortcutKeyup, { capture: true })
+    window.removeEventListener('blur', releaseNavigationSpace)
+    document.removeEventListener('visibilitychange', releaseNavigationSpaceWhenHidden)
+    releaseNavigationSpace()
+  }
+
+  onMounted(addShortcutListener)
+  onMounted(addShortcutReleaseListeners)
+  onUnmounted(removeShortcutListener)
+  onUnmounted(removeShortcutReleaseListeners)
+  onDeactivated(removeShortcutListener)
+  onDeactivated(removeShortcutReleaseListeners)
 
   useEventListener('keydown', (e: KeyboardEvent) => {
     // console.log('keydown', e)
+    if (e.defaultPrevented) return
     //解决无法复制、全选的问题
     if ((e.ctrlKey || e.metaKey) && ['KeyC', 'KeyA', 'KeyD'].includes(e.code)) return
-    if (!window?.disableEventListener) {
+    if (!(window as KeyboardEventWindow).disableEventListener) {
       // 检查当前单词是否包含空格，如果包含，则空格键应该被视为输入
-      if (e.code === 'Space') {
-        // 获取当前正在输入的单词信息
-        const currentWord = window.__CURRENT_WORD_INFO__
-
-        // 如果当前单词包含空格，且下一个字符应该是空格，则将空格键视为输入
-        // 或者如果当前处于输入锁定状态（等待空格输入），也将空格键视为输入
-        if (
-          currentWord &&
-          ((currentWord.word && currentWord.word.includes(' ') && currentWord.word[currentWord.input.length] === ' ') ||
-            currentWord.inputLock === true)
-        ) {
-          e.preventDefault()
-          return emitter.emit(EventKey.onTyping, e)
-        }
+      if (shouldTreatSpaceAsTyping(e)) {
+        e.preventDefault()
+        return emitter.emit(EventKey.onTyping, e)
       }
 
       const shortcutEvent = emitConfiguredShortcutEvents(e, settingStore.shortcutKeyMap)
@@ -399,7 +484,7 @@ export function useStartKeyboardEventListener() {
     }
   })
   useEventListener('keyup', (e: KeyboardEvent) => {
-    if (!window?.disableEventListener) {
+    if (!(window as KeyboardEventWindow).disableEventListener) {
       emitter.emit(EventKey.keyup, e)
     }
   })

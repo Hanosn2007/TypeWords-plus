@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, provide, watch } from 'vue'
+import { loadLibraryBook, loadWordCatalog } from '@typewords/core/utils/libraryBooks.ts'
+import { nextTick, onMounted, onUnmounted, provide, watch } from 'vue'
 import Statistics from '@typewords/core/components/word/Statistics.vue'
 import { emitter, EventKey, useEvents } from '@typewords/core/utils/eventBus.ts'
 import { resolveWordInputMode, useSettingStore } from '@typewords/core/stores/setting.ts'
 import { useRuntimeStore } from '@typewords/core/stores/runtime.ts'
 import type { Dict, PracticeData, TaskWords, Word } from '@typewords/core/types/types.ts'
-import { useStartKeyboardEventListener } from '@typewords/core/hooks/event.ts'
+import { getShortcutKey, useStartKeyboardEventListener } from '@typewords/core/hooks/event.ts'
 import { useDisableEventListener } from '@typewords/utils'
 import useTheme from '@typewords/core/hooks/theme.ts'
 import { getCurrentStudyWord, useWordOptions } from '@typewords/core/hooks/dict.ts'
@@ -15,6 +16,7 @@ import {
   _nextTick,
   cloneDeep,
   getShufflePracticeWords,
+  isDictIdMatch,
   isMobile,
   loadJsLib,
   resourceWrap,
@@ -29,16 +31,26 @@ import WordList from '@typewords/core/components/list/WordList.vue'
 import TypeWord from '@typewords/core/components/word/TypeWord.vue'
 import Empty from '@typewords/core/components/Empty.vue'
 import { useBaseStore } from '@typewords/core/stores/base.ts'
-import { usePracticeStore } from '@typewords/core/stores/practice.ts'
+import { usePracticeStore, type PracticeState, type TimerPauseReason } from '@typewords/core/stores/practice.ts'
 import { getDefaultDict, getDefaultWord } from '@typewords/core/types/func.ts'
 import ConflictNotice from '@typewords/core/components/dialog/ConflictNotice.vue'
 import PracticeLayout from '@typewords/core/components/PracticeLayout.vue'
-import { AppEnv, DICT_LIST, LIB_JS_URL, TourConfig, WordPracticeModeStageMap } from '@typewords/core/config/env.ts'
+import {
+  AppEnv,
+  DICT_LIST,
+  LIB_JS_URL,
+  TourConfig,
+  WordPracticeModeStageMap,
+  WordPracticeStageNameMap,
+} from '@typewords/core/config/env.ts'
 import { watchOnce } from '@vueuse/core'
 import { addStat, setUserDictProp } from '@typewords/core/apis'
 import GroupList from '@typewords/core/components/word/GroupList.vue'
 import { useDataSyncPersistence } from '@typewords/core/composables/useDataSyncPersistence.ts'
+import { bookPracticeSettingsKey } from '@typewords/core/composables/bookPracticeSettings.ts'
 import { flushStatToStore, usePracticeWordPersistence } from '@typewords/core/composables/usePracticePersistence.ts'
+import type { PracticeStageCheckpoint } from '@typewords/core/utils/cache.ts'
+import { crossedPracticeTimeSaveInterval, getPracticeTimerCutoff } from '@typewords/core/utils/practiceTime.ts'
 import {
   IdentifyMethod,
   ShortcutKey,
@@ -52,6 +64,7 @@ import { createEmptyCard, Rating } from 'ts-fsrs'
 import { useGetGradeByWrongTimes, useNextCard } from '@typewords/core/hooks/fsrs.ts'
 import WordMarkPickList, { type WordMarkPickResult } from '@typewords/core/components/word/WordMarkPickList.vue'
 import { buildQuestion } from '@typewords/core/utils/word-test.ts'
+import { completeBookLearningTask, findOtherBookLearning, getBookLearning, getUnitProgress, isCompletedPracticeCache, normalizeLearningWord, refreshUnitBookProgress } from '@typewords/core/utils/bookLearning.ts'
 import CollectNotice from '@typewords/core/components/dialog/CollectNotice.vue'
 
 const { isWordSimple, toggleWordSimple } = useWordOptions()
@@ -74,14 +87,34 @@ let showConflictNotice2 = $ref(false)
 let isComplete = $ref(false)
 let loading = $ref(false)
 let settling = $ref(false)
+let resettingBookTask = $ref(false)
+let taskSettled = false
 let timer = $ref<any>(-1)
 let isFocus = true
 const IDLE_MS = 3 * 60 * 1000
 let lastKeyActivity = Date.now()
+let visibilityResumeTimer: ReturnType<typeof setTimeout> | null = null
 let taskWords = $ref<TaskWords>({
   new: [],
   review: [],
 })
+let skipCheckpoint = $ref<PracticeStageCheckpoint | null>(null)
+let isManualStageSkip = false
+let skipStepRunning = false
+let isRestoringSkipCheckpoint = false
+let autoDuplicatePaused = false
+let duplicateSkipRunning = $ref(false)
+let duplicateUndo = $ref<{
+  word: string
+  practiceData: PracticeData
+  stat: PracticeState
+  learning: ReturnType<typeof getBookLearning>
+  lastLearnIndex: number
+  complete: boolean
+  statisticsLength: number
+  practiceType: WordPracticeType
+} | null>(null)
+
 
 if (import.meta.client) {
 }
@@ -94,6 +127,7 @@ function getDefaultPracticeData(origin?: Partial<PracticeData>, val?: Partial<Pr
     words: [],
     wrongWords: [],
     excludeWords: [],
+    duplicateSkippedWords: [],
     allWrongWords: [],
     wrongTimesMap: {},
     ratingMap: {},
@@ -130,44 +164,89 @@ provide('practiceData', data)
 provide('practiceTaskWords', taskWords)
 
 function bumpPracticeTimerActivity() {
-  lastKeyActivity = Date.now()
+  const now = Date.now()
+  // A delayed browser callback can arrive only when the user types again.
+  // Settle the old activity window first, or resetting lastKeyActivity here
+  // would incorrectly make the whole background gap look active.
+  if (isFocus && !statStore.timerPaused) {
+    const cutoff = getPracticeTimerCutoff(now, lastKeyActivity, IDLE_MS)
+    statStore.syncTimer(cutoff)
+    if (now >= lastKeyActivity + IDLE_MS) statStore.pauseTimer('auto_idle', cutoff)
+  }
+  lastKeyActivity = now
 }
 provide('bumpPracticeTimerActivity', bumpPracticeTimerActivity)
 
-function handleResumeTimer() {
-  if (!isFocus) return
-  if (statStore.timerPaused) {
-    statStore.resumeTimer()
-    Toast.success('已恢复计时')
-  }
-  bumpPracticeTimerActivity()
+function getTimerCutoff(now: number = Date.now()) {
+  return getPracticeTimerCutoff(now, lastKeyActivity, IDLE_MS)
 }
 
+function syncPracticeTimer(now: number = Date.now()): boolean {
+  if (!isFocus || statStore.timerPaused) return false
+  const cutoff = getTimerCutoff(now)
+  statStore.syncTimer(cutoff)
+  if (now >= lastKeyActivity + IDLE_MS) {
+    statStore.pauseTimer('auto_idle', cutoff)
+    return false
+  }
+  return true
+}
+
+function pausePracticeTimer(reason: TimerPauseReason, now: number = Date.now()) {
+  statStore.pauseTimer(reason, getTimerCutoff(now))
+}
+
+function clearVisibilityResumeTimer() {
+  if (!visibilityResumeTimer) return
+  clearTimeout(visibilityResumeTimer)
+  visibilityResumeTimer = null
+}
+
+function handleResumeTimer() {
+  if (!isFocus) return
+  clearVisibilityResumeTimer()
+  bumpPracticeTimerActivity()
+  if (statStore.timerPaused) {
+    statStore.resumeTimer(Date.now())
+    Toast.success('已恢复计时')
+  }
+}
+
+provide('togglePracticeTimer', () => {
+  if (statStore.timerPaused) handleResumeTimer()
+  else pausePracticeTimer('manual')
+})
+
 async function loadDict() {
-  // console.log('load好了开始加载')
-  let dict = getDefaultDict()
-  let dictId = practiceDictId
-  if (dictId) {
-    //先在自己的词典列表里面找，如果没有再在资源列表里面找
-    dict = store.word.bookList.find(v => v.id === dictId)
-    let r = await fetch(resourceWrap(DICT_LIST.WORD.ALL))
-    let dict_list = await r.json()
-    if (!dict) dict = dict_list.flat().find(v => v.id === dictId) as Dict
-    if (dict && dict.id) {
-      //如果是不是自定义词典，就请求数据
-      if (!dict.custom) dict = await _getDictDataByUrl(dict)
-      if (!dict.words.length) {
-        router.push('/words')
-        return Toast.warning('没有单词可学习！')
-      }
-      store.changeDict(dict)
-      await initData(null, true)
-      loading = false
-    } else {
-      router.push('/words')
+  try {
+    let dict = store.word.bookList.find(v => isDictIdMatch(v, practiceDictId))
+    if (!dict) {
+      const dictList = await loadWordCatalog(resourceWrap(DICT_LIST.WORD.ALL))
+      dict = dictList.find(v => isDictIdMatch(v, practiceDictId)) as Dict | undefined
     }
-  } else {
-    router.push('/words')
+
+    if (!dict?.id) {
+      await router.push('/words')
+      return
+    }
+
+    if (!dict.custom) dict = await _getDictDataByUrl(dict)
+    if (!dict.words.length) {
+      await router.push('/words')
+      Toast.warning('没有单词可学习！')
+      return
+    }
+
+    await store.changeDict(dict)
+    const bookMode = getBookLearning(store.sdict).practiceMode
+    if (bookMode !== undefined) settingStore.wordPracticeMode = bookMode
+    await initData(null, true)
+  } catch (error) {
+    console.warn('恢复单词练习失败', error)
+    Toast.error(error instanceof Error ? error.message : '恢复练习失败')
+    await router.push('/words')
+  } finally {
+    loading = false
   }
 }
 
@@ -183,10 +262,13 @@ const onvisibilitychange = async () => {
   isFocus = !document.hidden
   if (isFocus) {
     bumpPracticeTimerActivity()
-    if (statStore.timerPaused && statStore.timerPauseReason === 'auto_visibility') {
+    if (statStore.timerPaused && statStore.timerPauseReason === 'auto_visibility' && !visibilityResumeTimer) {
       //特意延迟提示用户，让用户看到，免得用户焦虑，以为没暂停
-      setTimeout(() => {
-        statStore.resumeTimer()
+      visibilityResumeTimer = setTimeout(() => {
+        visibilityResumeTimer = null
+        if (!isFocus || !statStore.timerPaused || statStore.timerPauseReason !== 'auto_visibility') return
+        bumpPracticeTimerActivity()
+        statStore.resumeTimer(Date.now())
         Toast.success('已自动恢复计时')
       }, 1500)
     }
@@ -194,18 +276,24 @@ const onvisibilitychange = async () => {
     runtimeStore.globalLoading = true
     try {
       await savePracticeData('visibility-focus')
+      await wordPersistence.flushRemote()
     } finally {
       runtimeStore.globalLoading = false
     }
   } else {
-    statStore.pauseTimer('auto_visibility')
-    void savePracticeData('visibility-hidden')
+    clearVisibilityResumeTimer()
+    pausePracticeTimer('auto_visibility')
+    void savePracticeData('visibility-hidden').then(() => wordPersistence.flushRemote(true))
   }
+}
+
+const onPageHide = () => {
+  void savePracticeData('pagehide').then(() => wordPersistence.flushRemote(true))
 }
 
 onMounted(async () => {
   //如果是从单词学习主页过来的，就直接使用；否则等待加载
-  if (runtimeStore.routeData) {
+  if (String(runtimeStore.routeData?.dictId) === practiceDictId && String(store.sdict.id) === practiceDictId) {
     await initData(null, true)
   } else {
     loading = true
@@ -218,11 +306,18 @@ onMounted(async () => {
   }
   document.removeEventListener('visibilitychange', onvisibilitychange)
   document.addEventListener('visibilitychange', onvisibilitychange)
+  window.removeEventListener('pagehide', onPageHide)
+  window.addEventListener('pagehide', onPageHide)
 })
 
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onvisibilitychange)
-  void savePracticeData('onUnmounted')
+  window.removeEventListener('pagehide', onPageHide)
+  clearVisibilityResumeTimer()
+  void savePracticeData('onUnmounted').then(() => wordPersistence.flushRemote(true))
+  // The cache keeps its accounting baseline, but other practice surfaces must
+  // not inherit the word page's runtime timer mode.
+  statStore.disableTimeAccounting()
   timer && clearInterval(timer)
   watchRefList.map(v => v?.stop())
 })
@@ -269,9 +364,58 @@ watchOnce(
 )
 
 let allWords: Word[] = []
+let practiceRouteOptions: any = null
 
 let isIniting = ref(true)
 let activePracticeType = $ref(settingStore.wordPracticeType)
+
+function assertCanApplyBookSettings() {
+  if (settling || resettingBookTask || isIniting.value || duplicateSkipRunning || skipStepRunning || isRestoringSkipCheckpoint) {
+    throw new Error('练习正在保存，请稍后重试。')
+  }
+}
+
+provide(bookPracticeSettingsKey, {
+  dictId: () => practiceDictId,
+  snapshot: async () => {
+    assertCanApplyBookSettings()
+    const completed = taskSettled || isComplete || statStore.stage === WordPracticeStage.Complete
+    return {
+      completed,
+      hasUnsavedAnswer: !completed && !!typingRef?.hasStartedAnswer?.(),
+      cache: completed ? null : {
+        dictId: practiceDictId,
+        practiceType: activePracticeType,
+        practiceMode: settingStore.wordPracticeMode,
+        taskWords,
+        practiceData: data,
+        statStoreData: statStore.$state,
+        skipCheckpoint,
+      },
+    }
+  },
+  apply: async (saveSettings, rebuild) => {
+    assertCanApplyBookSettings()
+    if (!rebuild) return await saveSettings()
+    resettingBookTask = true
+    isIniting.value = true
+    clearInterval(timer)
+    try {
+      await saveSettings()
+      await wordPersistence.clear(practiceDictId)
+      if (store.sdict.library) Object.assign(store.sdict, await loadLibraryBook(store.sdict))
+      practiceRouteOptions = null
+      emitter.emit(EventKey.resetWord)
+      await initData(getCurrentStudyWord())
+      resettingBookTask = false
+      await savePracticeDataIns('book-settings-restart')
+    } finally {
+      resettingBookTask = false
+      isIniting.value = false
+      if (!taskSettled && !isComplete) startPracticeTimer()
+    }
+  },
+})
 
 function setPracticeType(type: WordPracticeType) {
   activePracticeType = type
@@ -289,44 +433,62 @@ watch(
 
 async function initData(initVal?: TaskWords, init: boolean = false) {
   isIniting.value = true
+  taskSettled = false
   //只有初始化时，才读取缓存（本地 + 可选 Supabase）
   if (init) {
     let d = runtimeStore.routeData
-    if (!d) {
-      d = await wordPersistence.load()
+    runtimeStore.routeData = null
+    if (String(d?.dictId) !== practiceDictId) d = null
+    if (isCompletedPracticeCache(store.sdict, d)) d = null
+    const routeVersion = d?.libraryVersion ?? d?.taskWords?.libraryVersion
+    if (d && store.sdict.library && routeVersion) {
+      Object.assign(store.sdict, await loadLibraryBook(store.sdict, routeVersion))
     }
+    practiceRouteOptions = d
     if (!d) {
-      initData(getCurrentStudyWord())
-      return
+      d = await wordPersistence.load(practiceDictId)
+    }
+    if (isCompletedPracticeCache(store.sdict, d)) d = null
+    if (!d) {
+      return await initData(getCurrentStudyWord())
     }
     if (d.dictId && d.dictId !== practiceDictId) {
-      initData(getCurrentStudyWord())
-      return
+      return await initData(getCurrentStudyWord())
     }
     if (!(d.practiceData && d.statStoreData)) {
-      initData(d.taskWords)
-      return
+      return await initData(d.taskWords)
     }
+    if (d.practiceMode !== undefined) settingStore.wordPracticeMode = d.practiceMode
     console.log('initData')
-    taskWords = Object.assign(taskWords, d.taskWords)
+    taskWords = Object.assign(taskWords, { settings: undefined, unitId: undefined, unitScannedWords: undefined, unitReview: undefined, libraryVersion: undefined }, d.taskWords)
+    skipCheckpoint = d.skipCheckpoint ?? null
     //这里直接赋值的话，provide后的inject获取不到最新值
     data = getDefaultPracticeData(data, d.practiceData)
+    const learning = getBookLearning(store.sdict)
+    learning.skippedWords = Array.from(new Set([...learning.skippedWords, ...(data.duplicateSkippedWords ?? [])]))
     statStore.$patch(d.statStoreData)
-    if (d.practiceType !== undefined) {
-      setPracticeType(d.practiceType)
-      watchPracticeType(d.practiceType)
-    }
-    // 恢复缓存后，若计时状态为"未暂停"，需重新开启一个新片段
-    // 因为上次保存到现在有时间间隔，不能续在旧片段上
+    // A cache created before unified timing has no accounting marker. Preserve
+    // its saved spend as the legacy baseline before appending any new segment.
+    statStore.initializeTimeAccounting(!d.statStoreData.timeAccounting)
+    const restoredPracticeType = resolveRestoredPracticeType(
+      statStore.stage,
+      d.practiceType,
+      data.isTypingWrongWord
+    )
+    setPracticeType(restoredPracticeType)
+    watchPracticeType(restoredPracticeType)
+    // 恢复缓存后不能续接旧片段，避免将离线间隔计入有效时长。
     if (!statStore.timerPaused) {
-      const now = Date.now()
-      statStore.segments.push([now, now])
+      statStore.startTimerSegment(Date.now())
     }
   } else {
     console.log('initData')
+    skipCheckpoint = null
+    duplicateUndo = null
+    autoDuplicatePaused = false
     // taskWords = initVal
     //不能直接赋值，会导致 inject 的数据为默认值
-    taskWords = Object.assign(taskWords, initVal)
+    taskWords = Object.assign(taskWords, { settings: undefined, unitId: undefined, unitScannedWords: undefined, unitReview: undefined, libraryVersion: undefined }, initVal)
 
     if (settingStore.wordPracticeMode === WordPracticeMode.Shuffle) {
       setPracticeType(WordPracticeType.Dictation)
@@ -336,9 +498,12 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
       statStore.newWordNumber = 0
       statStore.reviewWordNumber = 0
     } else if (settingStore.wordPracticeMode === WordPracticeMode.Review) {
+      data = getDefaultPracticeData(data, { words: taskWords.review })
       if (taskWords.review.length) {
-        data = getDefaultPracticeData(data, { words: taskWords.review })
         statStore.stage = WordPracticeStage.IdentifyReview
+      } else {
+        Toast.warning('没有可复习的单词！')
+        router.push('/words')
       }
       statStore.total = taskWords.review.length
       statStore.newWordNumber = 0
@@ -359,6 +524,7 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
             statStore.stage = WordPracticeStage.ListenReview
           }
         } else {
+          data = getDefaultPracticeData(data)
           Toast.warning('没有可学习的单词！')
           router.push('/words')
         }
@@ -372,13 +538,29 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
     }
 
     statStore.startDate = Date.now()
+    statStore.skippedWordNumber = 0
     statStore.inputWordNumber = 0
     statStore.wrong = 0
     statStore.spend = 0
     statStore.segments = []
-    statStore.resumeTimer() // 同时 push 第一条片段 [now, now]
+    statStore.resetTimeAccounting()
+    statStore.startTimerSegment(Date.now())
     watchStage(statStore.stage)
     watchPracticeType(settingStore.wordPracticeType)
+  }
+
+  getBookLearning(store.sdict).practiceMode = settingStore.wordPracticeMode
+  if (store.sdict.units?.length && typeof taskWords.unitId === 'string') {
+    // The unfinished task owns the selection when a device restores an older local choice.
+    getBookLearning(store.sdict).selectedUnitId = taskWords.unitId
+  }
+
+  // 纯复习不能把首页同时生成的新词当成已学，也不能推进新词游标。
+  if ([WordPracticeMode.Review, WordPracticeMode.Shuffle].includes(settingStore.wordPracticeMode)) {
+    taskWords.new = []
+    taskWords.endIndex = taskWords.startIndex ?? store.sdict.lastLearnIndex
+    taskWords.unitScannedWords = []
+    if (store.sdict.units?.length) taskWords.unitReview = true
   }
 
   // 初始化 Question
@@ -389,20 +571,17 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
   allWords = shuffle(d.words)
   updateQuestion()
 
-  clearInterval(timer)
-  bumpPracticeTimerActivity()
-  timer = setInterval(() => {
-    if (!isFocus) return
-    if (statStore.timerPaused) return
-
-    const now = Date.now()
-    if (now - lastKeyActivity >= IDLE_MS) {
-      return statStore.pauseTimer('auto_idle')
-    }
-    statStore.spend += 1000
-  }, 1000)
+  startPracticeTimer()
   isIniting.value = false
   settling = isComplete = false
+}
+
+function startPracticeTimer() {
+  clearInterval(timer)
+  lastKeyActivity = Date.now()
+  timer = setInterval(() => {
+    syncPracticeTimer()
+  }, 1000)
 }
 
 const word = $computed<Word>(() => {
@@ -414,6 +593,94 @@ const prevWord: Word = $computed(() => {
 const nextWord: Word = $computed(() => {
   return data.words?.[data.index + 1] ?? undefined
 })
+
+const duplicateSources = $computed(() => findOtherBookLearning(store.word.bookList, store.sdict, word.word))
+const duplicateSourceLabel = $computed(() => duplicateSources.map(source => `「${source.name}」${source.mastered ? '（已掌握）' : ''}`).join('、'))
+const duplicateShortcutLabel = $computed(() => {
+  const key = settingStore.shortcutKeyMap[ShortcutKey.SkipLearnedWord]
+  return key === 'Space' ? '空格' : key || '未设置快捷键'
+})
+
+function handleDuplicateShortcut(event: KeyboardEvent): boolean {
+  if (event.repeat || event.isComposing || event.keyCode === 229 || isIniting.value || isComplete || settling) return false
+  if (getBookLearning(store.sdict).duplicateMode === 'off' || !duplicateSources.length) return false
+  if (getShortcutKey(event) !== settingStore.shortcutKeyMap[ShortcutKey.SkipLearnedWord]) return false
+  if (!typingRef || typingRef.hasStartedAnswer?.()) return false
+  if (settingStore.wordPracticeType === WordPracticeType.Identify && settingStore.identifyMethod === IdentifyMethod.QuickIdentify) return false
+  void skipDuplicateWord()
+  return true
+}
+
+async function skipDuplicateWord() {
+  if (duplicateSkipRunning || isIniting.value || settling || isComplete || !word.word || !duplicateSources.length) return
+  duplicateSkipRunning = true
+  try {
+    const key = normalizeLearningWord(word.word)
+    duplicateUndo = {
+      word: word.word,
+      practiceData: cloneDeep(data),
+      stat: cloneDeep(statStore.$state),
+      learning: cloneDeep(getBookLearning(store.sdict)),
+      lastLearnIndex: store.sdict.lastLearnIndex,
+      complete: store.sdict.complete,
+      statisticsLength: store.sdict.statistics.length,
+      practiceType: activePracticeType,
+    }
+    const learning = getBookLearning(store.sdict)
+    if (!learning.skippedWords.includes(key)) learning.skippedWords.push(key)
+    data.duplicateSkippedWords = Array.from(new Set([...(data.duplicateSkippedWords ?? []), key]))
+    statStore.skippedWordNumber = data.duplicateSkippedWords.length
+    if (!data.excludeWords.includes(word.word)) data.excludeWords.push(word.word)
+    data.wrongWords = data.wrongWords.filter(item => normalizeLearningWord(item.word) !== key)
+    next(false)
+    await savePracticeData('skip-duplicate')
+    if (!isComplete) await dataSync.saveDictState(store.$state, { pullWhenRemoteNewer: false })
+  } finally {
+    duplicateSkipRunning = false
+  }
+}
+
+async function undoDuplicateSkip() {
+  if (!duplicateUndo || settling) return
+  const checkpoint = duplicateUndo
+  duplicateUndo = null
+  autoDuplicatePaused = true
+  isRestoringSkipCheckpoint = true
+  try {
+    store.sdict.learning = checkpoint.learning
+    store.sdict.lastLearnIndex = checkpoint.lastLearnIndex
+    store.sdict.complete = checkpoint.complete
+    store.sdict.statistics.splice(checkpoint.statisticsLength)
+    isComplete = false
+    taskSettled = false
+    data = getDefaultPracticeData(data, cloneDeep(checkpoint.practiceData))
+    statStore.$patch(checkpoint.stat)
+    statStore.initializeTimeAccounting(!checkpoint.stat.timeAccounting)
+    if (!statStore.timerPaused) statStore.startTimerSegment()
+    setPracticeType(checkpoint.practiceType)
+    watchPracticeType(checkpoint.practiceType)
+    // Recreate the timer after undoing a final-word skip.
+    startPracticeTimer()
+    emitter.emit(EventKey.resetWord)
+    await nextTick()
+    await savePracticeDataIns('undo-duplicate', true)
+    await dataSync.saveDictState(store.$state, { pullWhenRemoteNewer: false })
+  } finally {
+    isRestoringSkipCheckpoint = false
+  }
+}
+
+watch(
+  [() => word.word, () => isIniting.value, () => duplicateSkipRunning],
+  async () => {
+    if (isIniting.value || autoDuplicatePaused || duplicateSkipRunning || isComplete || settling) return
+    if (getBookLearning(store.sdict).duplicateMode !== 'auto' || !duplicateSources.some(source => source.mastered)) return
+    if (settingStore.wordPracticeType === WordPracticeType.Identify && settingStore.identifyMethod === IdentifyMethod.QuickIdentify) return
+    await nextTick()
+    if (!typingRef?.hasStartedAnswer?.()) await skipDuplicateWord()
+  },
+  { flush: 'post' }
+)
 
 //因为有时要从缓存里面读数据，这时的状态、进度保持原样，所以只能惰性监听，所以没缓存时主动调用一个，以更新为符合当前进度的状态、模式
 //比如，每个阶段都有错误复习这个流程，当正在错词复习时，如果执行state监听，就可能恢复成stage默认的配置项（模式、dictation、translate）
@@ -436,6 +703,38 @@ function watchStage(n: WordPracticeStage) {
     case WordPracticeStage.IdentifyReview:
       setPracticeType(WordPracticeType.Identify)
       break
+  }
+}
+
+function resolveRestoredPracticeType(
+  stage: WordPracticeStage,
+  savedType: WordPracticeType | undefined,
+  isTypingWrongWord: boolean
+): WordPracticeType {
+  if (isTypingWrongWord) {
+    return [WordPracticeType.FollowWrite, WordPracticeType.Spell].includes(savedType as WordPracticeType)
+      ? (savedType as WordPracticeType)
+      : WordPracticeType.FollowWrite
+  }
+
+  switch (stage) {
+    case WordPracticeStage.FollowWriteNewWord:
+    case WordPracticeStage.FollowWriteReview:
+      return [WordPracticeType.FollowWrite, WordPracticeType.Spell].includes(savedType as WordPracticeType)
+        ? (savedType as WordPracticeType)
+        : WordPracticeType.FollowWrite
+    case WordPracticeStage.IdentifyNewWord:
+    case WordPracticeStage.IdentifyReview:
+      return WordPracticeType.Identify
+    case WordPracticeStage.ListenNewWord:
+    case WordPracticeStage.ListenReview:
+      return WordPracticeType.Listen
+    case WordPracticeStage.DictationNewWord:
+    case WordPracticeStage.DictationReview:
+    case WordPracticeStage.Shuffle:
+      return WordPracticeType.Dictation
+    default:
+      return savedType ?? settingStore.wordPracticeType
   }
 }
 
@@ -484,6 +783,7 @@ function wordLoop() {
 }
 
 function nextStage(originList: Word[], log: string = '', toast: boolean = false) {
+  if (!isManualStageSkip) skipCheckpoint = null
   //每次都判断，因为每次都可能新增已掌握的单词
   let list = originList.filter(v => !checkWordIsNeedNext(v))
   console.log(log)
@@ -507,11 +807,14 @@ async function complete() {
     isComplete = true
     settling = true
     runtimeStore.globalLoading = true
+    syncPracticeTimer()
     clearInterval(timer)
 
+    const sessionLearning = getBookLearning(store.sdict)
+    sessionLearning.skippedWords = Array.from(new Set([...sessionLearning.skippedWords, ...(data.duplicateSkippedWords ?? [])]))
     //如果 shuffle 数组不为空，就说明是复习，不用修改 lastLearnIndex
     if (settingStore.wordPracticeMode !== WordPracticeMode.Shuffle) {
-      store.sdict.lastLearnIndex = store.sdict.lastLearnIndex + statStore.newWordNumber
+      completeBookLearningTask(store.sdict, taskWords)
       // 检查已忽略的单词数量，是否全部完成
       let ignoreList = [store.allIgnoreWords, store.knownWords][settingStore.ignoreSimpleWord ? 0 : 1]
       // 忽略单词数
@@ -519,21 +822,35 @@ async function complete() {
         store.sdict.words.slice(store.sdict.lastLearnIndex).some(w => w.word.toLowerCase() === word)
       ).length
       // 如果lastLearnIndex已经超过可学单词数，则判定完成
-      if (store.sdict.lastLearnIndex + ignoreCount >= store.sdict.length) {
+      if (!store.sdict.units?.length && store.sdict.lastLearnIndex + ignoreCount >= store.sdict.length) {
         store.sdict.complete = true
         store.sdict.lastLearnIndex = store.sdict.length
       }
     }
 
-    // 结算前先将最后一条片段的 end 定格为当前时刻（segments 已是最新，无需临时快照）
-    if (!statStore.timerPaused && statStore.segments.length > 0) {
-      statStore.segments[statStore.segments.length - 1][1] = Date.now()
+    const skipped = new Set(data.duplicateSkippedWords ?? [])
+    const learning = getBookLearning(store.sdict)
+    const practiced = (store.sdict.units?.length ? [] : [...taskWords.new, ...taskWords.review])
+      .map(item => normalizeLearningWord(item.word)).filter(key => key && !skipped.has(key) && !learning.masteredWords.includes(key))
+    learning.learnedWords = Array.from(new Set([...learning.learnedWords, ...practiced]))
+    if (store.sdict.units?.length && !taskWords.unitReview) {
+      refreshUnitBookProgress(store.sdict, settingStore.ignoreSimpleWord ? store.allIgnoreWordsSet : store.knownWordsSet)
     }
+    statStore.skippedWordNumber = skipped.size
+    statStore.newWordNumber = taskWords.new.filter(item => !skipped.has(normalizeLearningWord(item.word))).length
+    statStore.reviewWordNumber = taskWords.review.filter(item => !skipped.has(normalizeLearningWord(item.word))).length
+    statStore.total = statStore.newWordNumber + statStore.reviewWordNumber
+    for (const key of skipped) {
+      delete data.wrongTimesMap[key]
+      delete data.ratingMap[key]
+    }
+    statStore.wrong = data.allWrongWords.filter(key => !skipped.has(normalizeLearningWord(key))).length
 
-    // 按自然日对 segments 分组，每天生成一条 Statistics 记录，落库到 store.sdict.statistics
+    // 按统一有效时长分日生成 Statistics 记录。
     flushStatToStore(statStore.$state)
 
     for (const [word, wrongTimes] of Object.entries(data.wrongTimesMap)) {
+      if (!normalizeLearningWord(word)) continue
       let rating = data.ratingMap[word]
       if (rating !== undefined) {
         setWordCard(rating, word)
@@ -556,8 +873,12 @@ async function complete() {
       }
     }
 
+    // Persist this marker in the same dictionary snapshot as statistics/progress.
+    // A refresh during remote sync must not restore the already-settled local cache.
+    learning.lastCompletedPracticeAt = statStore.startDate
     await dataSync.saveDictState(store.$state, { pullWhenRemoteNewer: false })
-    await wordPersistence.clear()
+    await wordPersistence.clear(practiceDictId)
+    taskSettled = true
 
     let trackData = {
       funSpend: Date.now() - start,
@@ -577,6 +898,7 @@ async function complete() {
 }
 
 function next(isTyping: boolean = true, ignoreLoop = false) {
+  if (isTyping) duplicateUndo = null
   let temp = word.word.toLowerCase()
   let preTimes = data.wrongTimesMap[temp] ?? 0
 
@@ -698,10 +1020,59 @@ function checkWordIsNeedNext(word: Word) {
   return isWordSimple(word) || rIndex > -1
 }
 
-function skipStep() {
-  data.index = data.words.length - 1
-  data.wrongWords = []
-  next(false, true)
+async function skipStep() {
+  if (skipStepRunning) return
+  skipStepRunning = true
+  try {
+    if (statStore.nextStage !== WordPracticeStage.Complete) {
+      const practiceData = cloneDeep(data)
+      practiceData.question = null
+      skipCheckpoint = {
+        stage: statStore.stage,
+        practiceType: activePracticeType,
+        practiceData,
+      }
+    }
+
+    isManualStageSkip = true
+    try {
+      data.index = data.words.length - 1
+      data.wrongWords = []
+      next(false, true)
+    } finally {
+      isManualStageSkip = false
+    }
+
+    if (skipCheckpoint) {
+      Toast.success('已跳到下一阶段，可用左箭头撤销')
+      await savePracticeData('skip-stage')
+    }
+  } finally {
+    skipStepRunning = false
+  }
+}
+
+async function undoSkipStep() {
+  if (!skipCheckpoint) return
+  const checkpoint = cloneDeep(skipCheckpoint)
+  isRestoringSkipCheckpoint = true
+  try {
+    skipCheckpoint = null
+    statStore.stage = checkpoint.stage
+    data = getDefaultPracticeData(data, checkpoint.practiceData)
+    setPracticeType(checkpoint.practiceType)
+    watchPracticeType(checkpoint.practiceType)
+    emitter.emit(EventKey.resetWord)
+    await nextTick()
+    await savePracticeDataIns('undo-skip-stage', true)
+    Toast.success(`已返回${WordPracticeStageNameMap[checkpoint.stage]}`)
+  } catch (error) {
+    skipCheckpoint = checkpoint
+    console.warn('撤销跳过保存失败', error)
+    Toast.error('返回成功，但保存失败；请再次点击左箭头重试')
+  } finally {
+    isRestoringSkipCheckpoint = false
+  }
 }
 
 function addExcludeWord() {
@@ -713,6 +1084,7 @@ function addExcludeWord() {
 }
 
 function onWordKnow() {
+  duplicateUndo = null
   //"我认识“强制更新了Good，因为点”已掌握“才会设置Easy
   if (
     resolveWordInputMode(settingStore, statStore.stage, settingStore.wordPracticeType) === WordInputMode.Whole
@@ -725,6 +1097,7 @@ function onWordKnow() {
 }
 
 function onWordRating(rating: Rating) {
+  duplicateUndo = null
   const key = word.word.toLowerCase()
   const current = data.ratingMap[key]
   if (current === undefined || rating < current) {
@@ -733,6 +1106,7 @@ function onWordRating(rating: Rating) {
 }
 
 function onTypeWrong() {
+  duplicateUndo = null
   data.wrongTimes++
   //这里的代码暂时不能移动，因为要实时把错词加入到列表里面，从而更新toolbar里面的错词数
   //todo 后续可以优化
@@ -757,12 +1131,13 @@ function onTypeWrong() {
 
 //设置单词卡片
 function setWordCard(rating: number, wordStr = word.word, times?: number) {
-  let card = store.fsrsData[wordStr]
+  wordStr = normalizeLearningWord(wordStr)
+  let card = store.currentFsrsData[wordStr]
   if (!card) {
     card = createEmptyCard()
   }
   card = nextCard(card, rating)
-  store.fsrsData[wordStr] = card
+  store.currentFsrsData[wordStr] = card
   // console.log(
   //   `更新卡片: 单词：${wordStr}, 模式：${WordPracticeType[settingStore.wordPracticeType]}, 评分: ${Rating[rating]}, 次数：${times}, 卡片: `,
   //   card,
@@ -770,29 +1145,20 @@ function setWordCard(rating: number, wordStr = word.word, times?: number) {
   // )
 }
 
-async function savePracticeDataIns(where?) {
-  const stages = WordPracticeModeStageMap[settingStore.wordPracticeMode]
-  if (
-    data.index === 0 &&
-    statStore.stage === stages[0] &&
-    settingStore.wordPracticeType === WordPracticeType.FollowWrite
-  ) {
-    //未开始练习
-    return
-  }
-  if (isComplete) return
+async function savePracticeDataIns(where?: string, force: boolean = false) {
+  // 第一词和第一阶段也保存；尚未完成不等于尚未开始。
+  if (resettingBookTask || isIniting.value || !data.words.length || isComplete || taskSettled) return
   // console.log('savePracticeData', where)
-  // 若计时未暂停，将最后一条片段的 end 更新为当前时刻，确保保存内容最新
-  if (!statStore.timerPaused && statStore.segments.length > 0) {
-    statStore.segments[statStore.segments.length - 1][1] = Date.now()
-  }
+  syncPracticeTimer()
   await wordPersistence.save({
     dictId: practiceDictId,
     practiceType: activePracticeType,
+    practiceMode: settingStore.wordPracticeMode,
     taskWords,
-    practiceData: data,
-    statStoreData: statStore.$state,
-  })
+    practiceData: cloneDeep(data),
+    statStoreData: cloneDeep(statStore.$state),
+    skipCheckpoint,
+  }, { unifiedTiming: true })
 }
 
 function savePracticeData(where?: string) {
@@ -802,8 +1168,9 @@ function savePracticeData(where?: string) {
 }
 
 function repeat() {
+  if (settling) return
   console.log('重学一遍')
-  wordPersistence.clear()
+  wordPersistence.clear(practiceDictId)
   let temp = cloneDeep(taskWords)
   let ignoreSet = [store.allIgnoreWordsSet, store.knownWordsSet][settingStore.ignoreSimpleWord ? 0 : 1]
   //随机练习单独处理
@@ -811,7 +1178,14 @@ function repeat() {
     temp.review = shuffle(temp.review.filter(v => !ignoreSet.has(v.word)))
   } else {
     //将学习进度减回去
-    store.sdict.lastLearnIndex = store.sdict.lastLearnIndex - statStore.newWordNumber
+    if (!store.sdict.units?.length) {
+      store.sdict.lastLearnIndex = taskWords.startIndex ?? Math.max(0, store.sdict.lastLearnIndex - taskWords.new.length)
+    } else if (isComplete) {
+      temp.review = [...temp.new, ...temp.review]
+      temp.new = []
+      temp.unitScannedWords = []
+      temp.unitReview = true
+    }
     //排除已掌握单词
     temp.new = temp.new.filter(v => !ignoreSet.has(v.word))
     temp.review = temp.review.filter(v => !ignoreSet.has(v.word))
@@ -883,7 +1257,21 @@ function toggleConciseMode() {
 }
 
 async function continueStudy() {
-  wordPersistence.clear()
+  if (settling) return
+  if (store.sdict.units?.length) {
+    if (!isComplete) {
+      Toast.warning('请先完成本轮，再继续下一组或切换单元。')
+      return
+    }
+    const ignored = settingStore.ignoreSimpleWord ? store.allIgnoreWordsSet : store.knownWordsSet
+    if (taskWords.unitReview || !getUnitProgress(store.sdict, taskWords.unitId, ignored).remaining) {
+      await router.push('/words')
+      return
+    }
+  }
+  const completed = isComplete
+  await wordPersistence.clear(practiceDictId)
+  if (store.sdict.library) Object.assign(store.sdict, await loadLibraryBook(store.sdict))
   let temp = cloneDeep(taskWords)
   let ignoreList = [store.allIgnoreWords, store.knownWords][settingStore.ignoreSimpleWord ? 0 : 1]
   //随机练习单独处理
@@ -892,16 +1280,16 @@ async function continueStudy() {
     temp.review = getShufflePracticeWords(
       store.sdict.words,
       {
-        total: runtimeStore.routeData?.total ?? temp.review.length,
-        range: runtimeStore.routeData?.shuffleRange ?? { start: 0, end: store.sdict.lastLearnIndex },
+        total: practiceRouteOptions?.total ?? temp.review.length,
+        range: practiceRouteOptions?.shuffleRange ?? { start: 0, end: store.sdict.lastLearnIndex },
       },
       ignoreSet
     ).words
   } else {
     //这里判断是否显示结算弹框，如果显示了结算弹框的话，就不用加进度了
-    if (!isComplete) {
+    if (!completed && !store.sdict.units?.length) {
       console.log('没学完，强行跳过')
-      store.sdict.lastLearnIndex = store.sdict.lastLearnIndex + statStore.newWordNumber
+      store.sdict.lastLearnIndex = taskWords.endIndex ?? (store.sdict.lastLearnIndex + taskWords.new.length)
       // 忽略单词数
       const ignoreCount = ignoreList.filter(word => store.sdict.words.some(w => w.word.toLowerCase() === word)).length
       // 如果lastLearnIndex已经超过可学单词数，则判定完成
@@ -927,8 +1315,12 @@ async function continueStudy() {
 }
 
 async function jumpToGroup(group: number) {
+  if (store.sdict.units?.length) {
+    Toast.warning('单元学习请在首页选择 Lesson。')
+    return
+  }
   window?.umami?.track('jumpToGroup')
-  wordPersistence.clear()
+  wordPersistence.clear(practiceDictId)
   console.log('没学完，强行跳过', group)
   store.sdict.lastLearnIndex = (group - 1) * store.sdict.perDayStudyNumber
   emitter.emit(EventKey.resetWord)
@@ -949,7 +1341,7 @@ function randomWrite() {
   settingStore.dictation = true
 }
 
-useStartKeyboardEventListener()
+useStartKeyboardEventListener({ beforeShortcut: handleDuplicateShortcut })
 // useDisableEventListener(() => loading)
 
 watch(isIniting, n => {
@@ -959,7 +1351,7 @@ watch(isIniting, n => {
       watch(
         () => statStore.stage,
         stage => {
-          if (isIniting.value) return
+          if (isIniting.value || isRestoringSkipCheckpoint) return
           watchStage(stage)
           void savePracticeData('stage')
         }
@@ -967,19 +1359,22 @@ watch(isIniting, n => {
       watch(
         () => activePracticeType,
         practiceType => {
+          if (isRestoringSkipCheckpoint) return
           watchPracticeType(practiceType)
           void savePracticeData('practice-type')
         }
       ),
       watch(
         () => data.index,
-        () => void savePracticeData('word-index')
+        () => {
+          if (!isRestoringSkipCheckpoint) void savePracticeData('word-index')
+        }
       ),
-      // 监听 statStore.spend，每过10秒自动保存数据
+      // Delayed timer callbacks can cross the threshold without landing exactly on it.
       watch(
         () => statStore.spend,
-        curr => {
-          if (curr % (30 * 1000) === 0 && curr !== 0) {
+        (curr, prev) => {
+          if (crossedPracticeTimeSaveInterval(prev, curr)) {
             savePracticeData('spend')
           }
         }
@@ -989,11 +1384,22 @@ watch(isIniting, n => {
 })
 
 function onWordMarkPickComplete(result: WordMarkPickResult) {
+  duplicateUndo = null
+  const learning = getBookLearning(store.sdict)
+  for (const item of result.skipped ?? []) {
+    const key = normalizeLearningWord(item.word)
+    if (!learning.skippedWords.includes(key)) learning.skippedWords.push(key)
+    data.duplicateSkippedWords = Array.from(new Set([...(data.duplicateSkippedWords ?? []), key]))
+    if (!data.excludeWords.includes(item.word)) data.excludeWords.push(item.word)
+  }
+  statStore.skippedWordNumber = data.duplicateSkippedWords?.length ?? 0
+
   result.know.map(word => {
     data.ratingMap[word.word.toLowerCase()] = Rating.Good
     data.excludeWords.push(word.word)
   })
   result.mastered.map(word => {
+    if (!isWordSimple(word)) toggleWordSimple(word)
     data.excludeWords.push(word.word)
   })
   console.log(result)
@@ -1016,7 +1422,7 @@ function onWordMarkPickComplete(result: WordMarkPickResult) {
 }
 
 useEvents([
-  [EventKey.onTyping, handleResumeTimer],
+  [EventKey.onTyping, () => { duplicateUndo = null; handleResumeTimer() }],
   [EventKey.repeatStudy, repeat],
   [EventKey.continueStudy, continueStudy],
   //当默写时，执行 show 会标记为错误，并更新卡片
@@ -1052,7 +1458,7 @@ useEvents([
             :shadow="false"
             :showClose="true"
             :message="statStore.timerPauseReason === 'auto_idle' ? '已连续 3 分钟无键盘操作，计时已暂停' : '计时已暂停'"
-            @close="statStore.resumeTimer"
+            @close="handleResumeTimer"
           />
         </div>
 
@@ -1103,6 +1509,7 @@ useEvents([
             :word="word"
             :question="data.question"
             :initial-wrong-times="data.wrongTimes"
+            :before-practice-shortcut="handleDuplicateShortcut"
             @wrong="onTypeWrong"
             @rating="onWordRating"
             @complete="next"
@@ -1110,7 +1517,19 @@ useEvents([
             @know="onWordKnow"
             @skip="skip"
             @toggle-simple="toggleWordSimpleWrapper"
-          />
+          >
+            <template #learning-notice>
+          <div v-if="duplicateSources.length && getBookLearning(store.sdict).duplicateMode !== 'off'" class="mt-4 mb-2 rounded-lg p-3 text-sm text-center" style="background: var(--bg-card-secend)" role="status">
+            <div>你已在 {{ duplicateSourceLabel }} 学过此词，可以再背一次加深记忆。</div>
+            <button type="button" class="mt-2 underline" @click="skipDuplicateWord()">跳过此词（{{ duplicateShortcutLabel }}）</button>
+            <div class="text-xs mt-1 opacity-70">快捷键在尚未作答时生效；开始输入后仍可点此跳过。</div>
+          </div>
+          <div v-if="duplicateUndo && !isComplete" class="mt-3 text-sm text-center" role="status">
+            已跳过重复词 {{ duplicateUndo.word }}
+            <button type="button" class="ml-2 underline" @click="undoDuplicateSkip">撤销跳过</button>
+          </div>
+            </template>
+          </TypeWord>
         </div>
       </div>
     </template>
@@ -1119,14 +1538,16 @@ useEvents([
         <template v-slot:title>
           <div class="center gap-1">
             <span>{{ store.sdict.name }}</span>
+            <span v-if="store.sdict.units?.length" class="text-sm opacity-70">{{ store.sdict.units.find(unit => unit.id === taskWords.unitId)?.name ?? '整本词书' }}</span>
 
             <GroupList
               @click="jumpToGroup"
-              v-if="taskWords.new.length && settingStore.wordPracticeMode !== WordPracticeMode.Shuffle"
+              v-if="!store.sdict.units?.length && taskWords.new.length && settingStore.wordPracticeMode !== WordPracticeMode.Shuffle"
             />
             <BaseIcon
               v-if="
                 taskWords.new.length &&
+                !store.sdict.units?.length &&
                 ![WordPracticeMode.Review, WordPracticeMode.Shuffle].includes(settingStore.wordPracticeMode)
               "
               @click="continueStudy"
@@ -1159,10 +1580,10 @@ useEvents([
       </Panel>
     </template>
     <template v-slot:footer>
-      <Footer @skipStep="skipStep" />
+      <Footer :canUndoSkipStep="!!skipCheckpoint" @skipStep="skipStep" @undoSkipStep="undoSkipStep" />
     </template>
   </PracticeLayout>
-  <Statistics v-model="isComplete" :loading="settling" />
+  <Statistics v-model="isComplete" :loading="settling" :can-undo-duplicate-skip="!!duplicateUndo" @undo-duplicate-skip="undoDuplicateSkip" />
   <ConflictNotice v-if="showConflictNotice" />
   <CollectNotice v-model="showCollectNotice" />
   <ConflictNotice2 v-model="showConflictNotice2" />

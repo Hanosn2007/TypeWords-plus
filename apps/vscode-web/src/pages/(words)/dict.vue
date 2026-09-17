@@ -15,6 +15,7 @@ import { useSettingStore } from '@typewords/core/stores/setting.ts'
 import { getDefaultDict } from '@typewords/core/types/func.ts'
 import {
   _getDictDataByUrl,
+  ensureCustomDictCopy,
   _nextTick,
   convertToWord,
   isMobile,
@@ -75,6 +76,10 @@ function syncDictInMyStudyList(study = false) {
 
     runtimeStore.editDict.words = allList
     let temp = runtimeStore.editDict
+    if (temp.library) {
+      temp = ensureCustomDictCopy(temp)
+      runtimeStore.editDict = temp
+    }
     if (!temp.custom && ![DictId.wordKnown, DictId.wordWrong, DictId.wordCollect].includes(temp.id)) {
       temp.custom = true
       if (!temp.id.includes('_custom')) {
@@ -242,7 +247,7 @@ onMounted(async () => {
       return router.push('/words')
     } else {
       if (
-        !runtimeStore.editDict.words.length &&
+        (!runtimeStore.editDict.words.length || runtimeStore.editDict.library) &&
         !runtimeStore.editDict.custom &&
         ![DictId.wordCollect, DictId.wordWrong, DictId.wordKnown].includes(
           runtimeStore.editDict.en_name || runtimeStore.editDict.id

@@ -41,7 +41,7 @@ const props = defineProps<{
     active?: boolean
     percentage: number
     ratio: number
-    children: {
+    children?: {
       active: boolean
       name: string
       percentage: number

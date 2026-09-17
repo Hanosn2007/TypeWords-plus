@@ -2,7 +2,7 @@ import { useRuntimeStore } from '../stores'
 
 export const CLOUD_TOKEN_KEY = 'typewords_cloud_token'
 
-export type CloudSyncStatus = 'idle' | 'syncing' | 'success' | 'error'
+export type CloudSyncStatus = 'idle' | 'syncing' | 'success' | 'error' | 'pending' | 'conflict'
 
 export type CloudSyncRow = {
   type: string
@@ -19,16 +19,21 @@ type ApiResponse<T> = {
   data: T
 }
 
-type AuthResult = {
+export type AuthResult = {
   token: string
   user: {
     id: number
     email: string
+    is_admin?: boolean
   }
 }
 
 let status: CloudSyncStatus = 'idle'
 let statusMessage = ''
+
+export class CloudSyncError extends Error {
+  constructor(message: string, public statusCode: number) { super(message) }
+}
 
 function getToken(): string {
   if (!import.meta.client) return ''
@@ -50,7 +55,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     if (response.status === 401 && import.meta.client) {
       localStorage.removeItem(CLOUD_TOKEN_KEY)
     }
-    throw new Error(body?.msg || `Request failed (${response.status})`)
+    throw new CloudSyncError(body?.msg || `Request failed (${response.status})`, response.status)
   }
   return body.data
 }
@@ -80,6 +85,7 @@ export class CloudSync {
     if (import.meta.client) {
       const runtimeStore = useRuntimeStore()
       runtimeStore.isError = nextStatus === 'error'
+      window.dispatchEvent(new Event('typewords-sync-status'))
     }
   }
 
@@ -117,10 +123,19 @@ export class CloudSync {
     return await request<CloudSyncRow[]>(`/sync/data?types=${encodeURIComponent(types.join(','))}`)
   }
 
-  static async upsert(rows: CloudSyncRow[]): Promise<boolean> {
+  static async upsert(rows: CloudSyncRow[], options: { keepalive?: boolean } = {}): Promise<boolean> {
     return await request<boolean>('/sync/data', {
       method: 'PUT',
       body: JSON.stringify({ rows }),
+      keepalive: options.keepalive,
     })
   }
+
+  static snapshot() { return request<import('./syncPolicy').SafeSnapshot>('/sync/snapshot') }
+  static putSnapshot(payload: { expectedRevision: number; requestId: string; rows: import('./syncPolicy').SafeRow[]; reason?: string }) {
+    return request<{ revision: number }>('/sync/snapshot', { method: 'PUT', body: JSON.stringify(payload) })
+  }
+  static history() { return request<Array<{ id: number; revision: number; kind: string; createdAt: string }>>('/sync/history') }
+  static historySnapshot(id: number) { return request<import('./syncPolicy').SafeSnapshot>(`/sync/history/${id}`) }
+  static backupStatus() { return request<{ enabled: boolean; server: { file: string; createdAt: string } | null; mac: { file: string; verifiedAt: string } | null }>('/admin/sync/backup-status') }
 }

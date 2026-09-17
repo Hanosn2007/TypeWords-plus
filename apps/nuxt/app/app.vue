@@ -2,4 +2,5 @@
   <NuxtLayout>
     <NuxtPage />
   </NuxtLayout>
+  <SyncHealthNotice />
 </template>

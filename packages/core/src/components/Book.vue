@@ -2,6 +2,8 @@
 import type { Dict } from '../types'
 import { Checkbox, Progress } from '@typewords/base'
 import { withAppBaseURL } from '../utils/base-url'
+import { getUnitProgress, normalizeLearningWord } from '../utils/bookLearning'
+import { useBaseStore, useSettingStore } from '../stores'
 
 interface IProps {
   item?: Partial<Dict>
@@ -24,13 +26,19 @@ const emit = defineEmits<{
   click: []
 }>()
 
+const base = useBaseStore()
+const settings = useSettingStore()
+const handledCount = $computed(() => props.item?.units?.length
+  ? getUnitProgress(props.item as Dict, '', new Set(settings.ignoreSimpleWord ? base.simpleWords.map(normalizeLearningWord) : [])).handled
+  : props.item?.lastLearnIndex ?? 0)
+
 const progress = $computed(() => {
-  return Number(((props.item?.lastLearnIndex / props.item?.length) * 100).toFixed())
+  return props.item?.length ? Math.round(handledCount / props.item.length * 100) : 0
 })
 
 const studyProgress = $computed(() => {
   if (!props.showProgress) return
-  return props.item?.lastLearnIndex ? props.item?.lastLearnIndex + '/' : ''
+  return handledCount ? handledCount + '/' : ''
 })
 
 const coverSrc = $computed(() => {
@@ -60,7 +68,7 @@ function handleClick(e: MouseEvent) {
       </div>
       <div class="absolute bottom-2 left-3 right-3">
         <Progress
-          v-if="item?.lastLearnIndex && showProgress"
+          v-if="handledCount && showProgress"
           class="mt-1"
           :percentage="progress"
           :show-text="false"
