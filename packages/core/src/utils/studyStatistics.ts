@@ -20,7 +20,10 @@ export function collectStudyStatistics(
     for (const stat of book.statistics ?? []) {
       rows.push({ ...stat, dictId, dictName: book.name })
     }
-    const cache = bundle?.entries?.[dictId]?.data
+    const caches = bundle?.schemaVersion === 3
+      ? Object.values(bundle.entries).map(entry => entry.data).filter(cache => cache?.dictId === dictId)
+      : [bundle?.entries?.[dictId]?.data]
+    for (const cache of caches) {
     if (!cache || (cache.dictId != null && String(cache.dictId) !== dictId)) continue
     if (isCompletedPracticeCache(book, cache)) continue
     const st = cache.statStoreData
@@ -33,6 +36,7 @@ export function collectStudyStatistics(
       wrong: st.wrong, skipped: st.skippedWordNumber ?? 0,
       sessionRole: days.length === 1 ? 'single' : index === 0 ? 'start' : 'middle',
     }))
+    }
   }
   return rows
 }

@@ -5,7 +5,7 @@
     "start": "nuxt dev",
     "dev": "nuxt dev",
     "build": "nuxt build",
-    "test": "",
+    "test": "pnpm -F @typewords/core test",
     "docker-build": "nuxt generate",
     "static": "nuxt generate && node scripts/copyDist.js",
     "generate": "nuxt generate && node scripts/do.js && node ../../scripts/deploy-eo-pages.js --dir dist --name type-words-deploy",

@@ -5,7 +5,8 @@ import { useBaseStore, useRuntimeStore, useSettingStore, useUserStore } from '..
 import type { BaseState, SettingState } from '../stores'
 import { Supabase } from '../utils/supabase'
 import { CloudSync } from '../utils/cloudSync'
-import { claimSyncWriter } from '../utils/safeSync'
+import { claimSyncWriter, suspendSafeSync, resumeSafeSync } from '../utils/safeSync'
+import { ensureStudyUpgrade } from './studyUpgrade'
 import { ensureHashGuardBeforeInit, useDataSyncPersistence } from './useDataSyncPersistence'
 import { usePracticeWordPersistence } from './usePracticePersistence'
 import { SyncDataType } from '../types'
@@ -37,6 +38,13 @@ export function useInit() {
       await dataSync.saveLocalAndSync(SyncDataType.setting, settingStore.$state, { canSyncRemote: false })
     } catch (error) { console.error('离开页面前本机保存失败', error) }
   }
+  function flushForUpdate(event: Event) {
+    if (!store.load || !settingStore.load) return
+    ;(event as CustomEvent<Promise<unknown>[]>).detail.push((async () => {
+      await dataSync.saveDictState(store.$state, { canSyncRemote: false })
+      await dataSync.saveLocalAndSync(SyncDataType.setting, settingStore.$state, { canSyncRemote: false })
+    })())
+  }
 
   const onvisibilitychange = async () => {
     focus = !document.hidden
@@ -63,6 +71,7 @@ export function useInit() {
   }
 
   onUnmounted(() => {
+    window.removeEventListener('typewords-save-before-update', flushForUpdate)
     document.removeEventListener('visibilitychange', onvisibilitychange)
     window.removeEventListener('pagehide', flushLocalBeforeLeaving)
   })
@@ -84,6 +93,8 @@ export function useInit() {
     document.removeEventListener('visibilitychange', onvisibilitychange)
     window.removeEventListener('pagehide', flushLocalBeforeLeaving)
 
+    suspendSafeSync()
+    await ensureStudyUpgrade()
     await ensureHashGuardBeforeInit()
     // await userStore.init()
     let dictData = await store.init()
@@ -93,6 +104,7 @@ export function useInit() {
       await usePracticeWordPersistence().migrateUnscopedLocalLegacyCache(String(store.sdict.id))
     }
     let settingData = await settingStore.init()
+    resumeSafeSync()
     if (dictData && settingData) {
       await dataSync.syncData({
         [SyncDataType.dict]: dictData,
@@ -107,6 +119,8 @@ export function useInit() {
     //等数据全部准备好，再开启监听，避免循环保存-同步
     document.addEventListener('visibilitychange', onvisibilitychange)
     window.addEventListener('pagehide', flushLocalBeforeLeaving)
+    window.removeEventListener('typewords-save-before-update', flushForUpdate)
+    window.addEventListener('typewords-save-before-update', flushForUpdate)
     //用 $subscribe 替代 watch
     unsub = store.$subscribe(
       debounce(async (mutation, data: BaseState) => {

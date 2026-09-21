@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import UnitWordBrowser from './UnitWordBrowser.vue'
 import { computed, ref, watch } from 'vue'
 import { BaseButton, Toast } from '@typewords/base'
 import { useBaseStore, useSettingStore } from '../../stores'
@@ -80,7 +81,7 @@ async function enable() {
 }
 
 async function select(unitId: string) {
-  if (await hasPendingPractice()) return
+  if (props.disabled || busy.value) return
   if (unitId && !units.value.some(unit => unit.id === unitId)) return
   busy.value = true
   try {
@@ -115,6 +116,7 @@ async function onSelect(event: Event) {
     <template v-else>
       <div class="unit-heading">
         <h2 id="book-unit-title" class="title mb-0">学习单元</h2>
+        <UnitWordBrowser :book="dict" />
         <span class="unit-hint">{{ currentName }} · 已处理 {{ progress.handled }} / {{ progress.total }} 词</span>
       </div>
       <div class="unit-controls">
@@ -133,7 +135,7 @@ async function onSelect(event: Event) {
       <p class="unit-hint">{{ progress.remaining ? `${selected ? '本单元' : '整本词书'}剩余 ${progress.remaining} 词。${quantityHint}` : '当前范围已处理完，可以重练或选择下一单元。' }} 到期复习仍来自本书已学词。</p>
       <p v-if="progress.skipped" class="unit-hint">其中跳过 {{ progress.skipped }} 词，跳过不表示已经掌握。</p>
     </template>
-    <p v-if="disabled" class="unit-hint mt-2">有未完成的练习时，请先继续并完成本轮，再切换单元。</p>
+    <p class="unit-hint mt-2">每个单元分别保留未完成练习，切换后可继续原来的位置。</p>
   </section>
 </template>
 

@@ -2,7 +2,7 @@ import { get, set, update } from 'idb-keyval'
 import { CloudSync, CloudSyncError, CLOUD_TOKEN_KEY } from './cloudSync'
 import { decideSyncSignatures, hasLearningData, normalizeSyncRows, rowsSignatureAsync, type SafeRow, type SafeSnapshot, type SyncBaseline } from './syncPolicy'
 
-type Hooks = { read: () => Promise<SafeRow[]>; apply: (rows: SafeRow[], expected: string) => Promise<void> }
+type Hooks = { read: () => Promise<SafeRow[]>; apply: (rows: SafeRow[], expected: string) => Promise<void>; upgrade?: (rows: SafeRow[]) => SafeRow[] }
 type State = { baseline?: SyncBaseline; pending?: { expectedRevision: number; requestId: string; rows: SafeRow[]; reason?: string } }
 export type RecoveryPoint = { id: string; createdAt: string; account: number; reason: string; local: SafeRow[]; remote?: SafeSnapshot }
 export type SyncPreview = { local: SafeRow[]; remote: SafeSnapshot; account: number; signature: string }
@@ -21,10 +21,18 @@ let writerClaim: Promise<boolean> | undefined
 let localWrites: Promise<any> = Promise.resolve()
 let pendingLocalWrites = 0
 let localSaveFailed = false
+let savedReload = false
+export async function waitForLocalSave() {
+  await localWrites
+  if (localSaveFailed) throw new Error('本机保存失败，请先导出数据，暂不刷新。')
+}
+/** Explicit update flow has flushed every active editor before calling this. */
+export async function allowSavedReload() { await waitForLocalSave(); savedReload = true }
 export function closeProtectionMessage(): string {
   if (!tabWritable) return ''
   if (localSaveFailed) return '本机保存失败，请先导出数据，再关闭页面。'
   if (pendingLocalWrites) return '正在保存到本机，请稍等后再关闭页面。'
+  if (savedReload) return ''
   if (CloudSync.check() && ['pending', 'syncing', 'error', 'conflict'].includes(CloudSync.getStatus().status)) {
     return '已保存到本机，云端同步尚未完成。请稍等；若有冲突或网络错误，请到同步页处理。'
   }
@@ -231,7 +239,7 @@ export function resolveSync(preview: SyncPreview, choice: 'local' | 'remote', re
       await hooks.apply(remote.rows, preview.signature)
       await acknowledge(id, remote.revision, await hooks.read())
     } else {
-      const desired = restored ? normalizeSyncRows(restored) : preview.local
+      const desired = restored ? (hooks.upgrade?.(normalizeSyncRows(restored)) ?? normalizeSyncRows(restored)) : preview.local
       // A recovery is a new revision, not database rollback. The server backs up the current cloud snapshot.
       state!.pending = undefined
       await upload(id, desired, remote.revision, restored ? 'restore' : 'resolve')

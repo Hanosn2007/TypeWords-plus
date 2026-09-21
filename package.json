@@ -7,11 +7,18 @@
     "docker-build": "pnpm -F @typewords/nuxt docker-build",
     "build": "pnpm -F @typewords/nuxt static",
     "generate": "pnpm -F @typewords/nuxt static",
-    "build-web": "pnpm -F @typewords/nuxt generate",
+    "build-web": "pnpm build:web",
+    "build:web": "pnpm -F @typewords/nuxt exec nuxt generate",
+    "release:eo:web": "pnpm -F @typewords/nuxt generate",
     "build-dev-web": "pnpm -F @typewords/nuxt generate-dev",
     "build-vscode-web": "pnpm -F @typewords/vscode-web build",
     "dev-vscode-web": "pnpm -F @typewords/vscode-web dev",
-    "test": ""
+    "test": "pnpm test:core",
+    "test:core": "node --experimental-strip-types --test packages/core/test/*.test.ts packages/core/test/*.test.mjs",
+    "test:server": "cd server && go test ./... && go vet ./...",
+    "preview:acceptance": "node scripts/library-preview.mjs --port 4197 --api-port 18997 --data-dir output/acceptance/unit-refactor",
+    "typecheck": "pnpm -F @typewords/nuxt exec nuxt typecheck",
+    "verify": "pnpm test:core && pnpm test:server && pnpm typecheck && pnpm build:web"
   },
   "dependencies": {
     "@floating-ui/dom": "^1.7.4",

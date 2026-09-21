@@ -124,6 +124,7 @@ export function normalizeBookLearning(value: unknown): BookLearning {
     ...(newWordMode !== undefined ? { newWordMode } : {}),
     ...(typeof stored?.lastCompletedPracticeAt === 'number' && Number.isFinite(stored.lastCompletedPracticeAt)
       ? { lastCompletedPracticeAt: stored.lastCompletedPracticeAt } : {}),
+    ...(stored?.completedPracticeByScope ? { completedPracticeByScope: { ...stored.completedPracticeByScope } } : {}),
     ...(Array.isArray(stored?.unitProcessedWords) ? { unitProcessedWords: normalizeWordList(stored.unitProcessedWords) } : {}),
     ...(stored?.legacyFsrsMigrated ? { legacyFsrsMigrated: true } : {}),
   }
@@ -169,10 +170,11 @@ export function getBookLearning(dict: Dict): BookLearning {
 /** The round marker is saved with statistics and progress, before removing its cache. */
 export function isCompletedPracticeCache(
   dict: Pick<Dict, 'id' | 'learning'>,
-  cache: { dictId?: string; statStoreData?: { startDate?: number } } | null | undefined
+  cache: { dictId?: string; practiceMode?: number; taskWords?: { unitId?: string }; taskWordsStr?: { unitId?: string }; statStoreData?: { startDate?: number } } | null | undefined
 ): boolean {
   if (!cache || (cache.dictId != null && String(cache.dictId) !== String(dict.id))) return false
-  const completedAt = dict.learning?.lastCompletedPracticeAt
+  const scope = JSON.stringify([cache.taskWords?.unitId ?? cache.taskWordsStr?.unitId ?? '', cache.practiceMode === 1 ? 'free' : 'study'])
+  const completedAt = dict.learning?.completedPracticeByScope?.[scope] ?? dict.learning?.lastCompletedPracticeAt
   return typeof completedAt === 'number' && Number.isFinite(completedAt) && completedAt === cache.statStoreData?.startDate
 }
 
@@ -348,7 +350,11 @@ export function getUnitProgress(dict: Dict, unitId: string = '', ignored?: Reado
   let learned = 0
   let skipped = 0
   const seen = new Set<string>()
-  for (const word of getUnitWords(dict, unitId)) {
+  // Public books unload their definitions when inactive; unit membership and
+  // personal learning remain available and must not turn into zero progress.
+  const members = dict.words?.length ? getUnitWords(dict, unitId) : normalizeBookUnits(dict.units)
+    .filter(unit => !unitId || unit.id === unitId).flatMap(unit => unit.words.map(word => ({ word })))
+  for (const word of members) {
     const key = normalizeLearningWord(word?.word)
     if (!key || seen.has(key)) continue
     seen.add(key)
@@ -390,15 +396,21 @@ export type UnitTaskWords = {
  * portion visited before the requested number of new words is returned.
  */
 export function selectUnitTaskWords(dict: Dict, limit: number, ignored?: ReadonlySet<string>): UnitTaskWords {
-  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0
-  if (!max) return { new: [], scanned: [] }
-
   const selectedUnitId = getBookLearning(dict).selectedUnitId ?? ''
-  const handledWords = getBookHandledWordSet(dict, ignored)
+  const { new: fresh, scanned } = scanStudyWords(getUnitWords(dict, selectedUnitId), getBookHandledWordSet(dict, ignored), limit)
+  return { new: fresh, scanned }
+}
+
+/** One selector for named units and the implicit whole-book unit. */
+export function scanStudyWords(words: readonly Word[], handledWords: ReadonlySet<string>, limit: number): UnitTaskWords & { visited: number } {
+  const max = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0
+  if (!max) return { new: [], scanned: [], visited: 0 }
   const fresh: Word[] = []
   const scanned: string[] = []
   const seen = new Set<string>()
-  for (const word of getUnitWords(dict, selectedUnitId)) {
+  let visited = 0
+  for (const word of words) {
+    visited++
     const key = normalizeLearningWord(word?.word)
     if (!key || seen.has(key)) continue
     seen.add(key)
@@ -406,7 +418,7 @@ export function selectUnitTaskWords(dict: Dict, limit: number, ignored?: Readonl
     if (!handledWords.has(key)) fresh.push(word)
     if (fresh.length >= max) break
   }
-  return { new: fresh, scanned }
+  return { new: fresh, scanned, visited }
 }
 
 /**
@@ -415,7 +427,7 @@ export function selectUnitTaskWords(dict: Dict, limit: number, ignored?: Readonl
  * cannot make an earlier unfinished word appear complete.
  */
 export function refreshUnitBookProgress(dict: Dict, ignored?: ReadonlySet<string>): void {
-  if (!hasBookUnits(dict)) return
+  if (!dict.words?.length) return
 
   const handledWords = getBookHandledWordSet(dict, ignored)
   const words = Array.isArray(dict.words) ? dict.words : []
@@ -473,7 +485,6 @@ export function completeBookLearningTask(dict: Dict, task: TaskWords): string[] 
   const skipped = new Set(learning.skippedWords.map(normalizeLearningWord))
   const mastered = new Set(learning.masteredWords.map(normalizeLearningWord))
 
-  if (hasBookUnits(dict)) {
     if (task.unitReview) return []
 
     const actualWords = new Set(getActualWordMap(dict).keys())
@@ -481,6 +492,12 @@ export function completeBookLearningTask(dict: Dict, task: TaskWords): string[] 
     const scopedWords = new Set(getUnitWords(dict, taskUnitId).map(word => normalizeLearningWord(word.word)).filter(Boolean))
     const processedWords = new Set<string>()
     addNormalizedWords(processedWords, learning.unitProcessedWords)
+    // Legacy cursor is an import adapter for the implicit whole-book unit.
+    // New sessions record scanned members just like named units.
+    if (!hasBookUnits(dict)) {
+      const end = Math.min(Math.max(Number(task.endIndex ?? dict.lastLearnIndex + task.new.length) || 0, 0), dict.words.length)
+      addNormalizedWords(processedWords, dict.words.slice(0, end).map(word => word.word))
+    }
     for (const word of task.unitScannedWords ?? task.new.map(item => item.word)) {
       const key = normalizeLearningWord(word)
       if (key && scopedWords.has(key)) processedWords.add(key)
@@ -494,16 +511,4 @@ export function completeBookLearningTask(dict: Dict, task: TaskWords): string[] 
     learning.learnedWords = Array.from(new Set([...learning.learnedWords, ...learned]))
     refreshUnitBookProgress(dict)
     return learned
-  }
-
-  const start = Math.min(Math.max(Number(task.startIndex ?? dict.lastLearnIndex) || 0, 0), dict.words.length)
-  const end = Math.min(Math.max(Number(task.endIndex ?? start + task.new.length) || start, start), dict.words.length)
-  const learned = task.new
-    .map(word => normalizeLearningWord(word.word))
-    .filter(word => word && !skipped.has(word) && !mastered.has(word))
-
-  learning.learnedWords = Array.from(new Set([...learning.learnedWords, ...learned]))
-  dict.lastLearnIndex = end
-  dict.complete = end >= dict.words.length
-  return learned
 }

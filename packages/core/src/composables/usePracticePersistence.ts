@@ -1,6 +1,6 @@
 import { useBaseStore } from '../stores'
 import { Toast } from '@typewords/base'
-import { isCompletedPracticeCache, normalizeLearningWord } from '../utils/bookLearning'
+import { getBookLearning, isCompletedPracticeCache, normalizeLearningWord } from '../utils/bookLearning'
 import type { PracticeState } from '../stores/practice'
 import { SyncDataType } from '../types'
 import type { PracticeData, TaskWords, Word } from '../types'
@@ -22,6 +22,9 @@ import {
   isPracticeWordCacheBundle,
   mergePracticeWordCacheBundles,
   setPracticeWordCacheBundleLocal,
+  upgradePracticeScopes,
+  practiceScopeKey,
+  cacheScopeKey,
 } from '../utils/cache'
 import { useDataSyncPersistence } from './useDataSyncPersistence'
 import { getPracticeTimeDays, stripPracticeTimeAccounting } from '../utils/practiceTime'
@@ -217,13 +220,12 @@ async function restorePracticeWordCache(data: PracticeWordCacheStored | null): P
   }
 
   const practiceData = restorePracticeData(data.practiceData, wordMap)
-  if (typeof taskWords.unitId === 'string' && (
+  if (
     taskWords.new.length !== data.taskWordsStr.new.length ||
     taskWords.review.length !== data.taskWordsStr.review.length ||
     practiceData.words.length !== data.practiceData.wordsStr.length
-  )) {
-    Toast.warning('词书内容已变化，原练习无法完整恢复。进度未推进，请重新开始本轮。')
-    return null
+  ) {
+    throw new Error('本轮词书内容不完整，原练习已保留。请联网加载对应版本后重试，或在词书设置中明确重新开始。')
   }
   const skipCheckpoint = data.skipCheckpoint
     ? {
@@ -244,9 +246,17 @@ async function restorePracticeWordCache(data: PracticeWordCacheStored | null): P
   }
 }
 
-export function usePracticeWordPersistence() {
+export function usePracticeWordPersistence(options?: { free?: () => boolean }) {
   const dataSync = useDataSyncPersistence()
   let currentDictId: string | undefined
+  function scope(dictId?: string) {
+    const book = useBaseStore().word.bookList.find(book => String(book.id) === dictId)
+    return { unitId: book?.learning?.selectedUnitId ?? '', free: options?.free?.() ?? false }
+  }
+  function scopedCache(payload: PracticeWordCachePayload | undefined, dictId?: string) {
+    const { unitId, free } = scope(dictId)
+    return getPracticeWordCacheFromPayload(payload, dictId, unitId, free)
+  }
 
   function resolveDictId(dictId?: string, data?: PracticeWordCache | null): string | undefined {
     const resolved = dictId ?? data?.dictId ?? currentDictId ?? useBaseStore().sdict?.id
@@ -350,7 +360,7 @@ export function usePracticeWordPersistence() {
     await wordLocalWriteQueue
     const resolvedDictId = resolveDictId(dictId)
     const bundle = await getPracticeWordCacheBundleLocal()
-    return restorePracticeWordCache(getPracticeWordCacheFromPayload(bundle, resolvedDictId))
+    return restorePracticeWordCache(scopedCache(bundle, resolvedDictId))
   }
 
   async function load(dictId?: string): Promise<PracticeWordCache | null> {
@@ -368,7 +378,7 @@ export function usePracticeWordPersistence() {
       mergeWordBundleFromRemotePull
     )
     if (remote) {
-      return restorePracticeWordCache(getPracticeWordCacheFromPayload(remote.data, resolvedDictId))
+      return restorePracticeWordCache(scopedCache(remote.data, resolvedDictId))
     }
     return null
   }
@@ -382,7 +392,7 @@ export function usePracticeWordPersistence() {
   async function getLocalEntryCompact(dictId?: string): Promise<PracticeWordCacheStored | null> {
     await wordLocalWriteQueue
     const resolvedDictId = resolveDictId(dictId)
-    const data = getPracticeWordCacheFromPayload(await getPracticeWordCacheBundleLocal(), resolvedDictId)
+    const data = scopedCache(await getPracticeWordCacheBundleLocal(), resolvedDictId)
     const book = useBaseStore().word.bookList.find(book => String(book.id) === resolvedDictId)
     return book && isCompletedPracticeCache(book, data) ? null : data
   }
@@ -398,11 +408,8 @@ export function usePracticeWordPersistence() {
       .catch(error => console.warn('上一次单词练习本地保存失败', error))
       .then(async () => {
         const updatedAt = new Date().toISOString()
-        const bundle = mergePracticeWordCacheBundles(await getPracticeWordCacheBundleLocal(), null) ?? {
-          schemaVersion: 2 as const,
-          entries: {},
-        }
-        bundle.entries[dictId] = { data: compactData, updatedAt }
+        const bundle = upgradePracticeScopes(await getPracticeWordCacheBundleLocal())
+        bundle.entries[cacheScopeKey(compactData, dictId)] = { data: compactData, updatedAt }
         await dataSync.saveLocalOnly(SyncDataType.practice_word, bundle, updatedAt)
         scheduleWordRemoteSync({
           data: bundle,
@@ -428,15 +435,14 @@ export function usePracticeWordPersistence() {
       console.warn('单词练习缓存缺少词典 ID，已跳过清除')
       return
     }
+    const { unitId, free } = scope(resolvedDictId)
+    const clearingKey = practiceScopeKey(resolvedDictId, unitId, free)
     wordLocalWriteQueue = wordLocalWriteQueue
       .catch(error => console.warn('上一次单词练习本地保存失败', error))
       .then(async () => {
         const updatedAt = new Date().toISOString()
-        const bundle = mergePracticeWordCacheBundles(await getPracticeWordCacheBundleLocal(), null) ?? {
-          schemaVersion: 2 as const,
-          entries: {},
-        }
-        bundle.entries[resolvedDictId] = { data: null, updatedAt }
+        const bundle = upgradePracticeScopes(await getPracticeWordCacheBundleLocal())
+        bundle.entries[clearingKey] = { data: null, updatedAt }
         await dataSync.saveLocalOnly(SyncDataType.practice_word, bundle, updatedAt)
         scheduleWordRemoteSync({
           data: bundle,

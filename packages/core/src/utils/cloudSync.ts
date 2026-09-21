@@ -43,6 +43,7 @@ function getToken(): string {
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
   headers.set('Content-Type', 'application/json')
+  headers.set('X-TypeWords-Data-Format', '3')
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
@@ -52,6 +53,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   })
   const body = (await response.json().catch(() => null)) as ApiResponse<T> | null
   if (!response.ok || !body?.success) {
+    if (response.status === 428 && import.meta.client) window.dispatchEvent(new Event('typewords-update-required'))
     if (response.status === 401 && import.meta.client) {
       localStorage.removeItem(CLOUD_TOKEN_KEY)
     }

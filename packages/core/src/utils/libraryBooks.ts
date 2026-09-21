@@ -97,7 +97,7 @@ export async function loadLibraryRelease(bookId: string, version?: number): Prom
 
 export async function loadLibraryBook(book: Dict, exactVersion?: number): Promise<Dict> {
   if (!book.library || book.custom) return book
-  const cache = exactVersion == null ? await getPracticeWordCacheLocal(String(book.id)) : null
+  const cache = exactVersion == null ? await getPracticeWordCacheLocal(String(book.id), book.learning?.selectedUnitId ?? '') : null
   const pinnedVersion = exactVersion ?? getPendingLibraryVersion(book, cache)
   const release = await loadLibraryRelease(book.library.bookId, pinnedVersion)
   return applyLibraryRelease(book, release)

@@ -3,4 +3,5 @@
     <NuxtPage />
   </NuxtLayout>
   <SyncHealthNotice />
+  <StudyUpgradeNotice />
 </template>

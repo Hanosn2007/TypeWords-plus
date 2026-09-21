@@ -1,5 +1,5 @@
 import type { Article, Dict, TaskWords, Word } from '../types'
-import { DictType, getDefaultDict, getDefaultWord } from '../types'
+import { DictType, getDefaultDict } from '../types'
 import { useBaseStore } from '../stores/base.ts'
 import { useSettingStore } from '../stores/setting.ts'
 import { _getDictDataByUrl, cloneDeep, getRandomN, isDictIdMatch, resourceWrap, shuffle, splitIntoN } from '../utils'
@@ -8,17 +8,13 @@ import { AppEnv, DICT_LIST, DictId } from '../config/env.ts'
 import { addDict, detail } from '../apis'
 import { useRuntimeStore } from '../stores/runtime.ts'
 import { useRoute, useRouter } from 'vue-router'
-import dayjs from 'dayjs'
 import { computed } from 'vue'
 import {
   getBookLearning,
-  getBookTaskSettings,
-  getNewWordLimit,
-  migrateLegacyFsrsToBookLearning,
   normalizeLearningWord,
-  selectUnitTaskWords,
-  refreshUnitBookProgress,
 } from '../utils/bookLearning'
+import { planStudyTask } from '../learning/planStudyTask'
+import { prepareStudyBook, applyStudyCardCleanup } from '../learning/prepareStudyBook'
 
 /**
  * Word actions normally apply to the selected study book. Detail pages may
@@ -159,122 +155,21 @@ export function useArticleOptions() {
   }
 }
 
+/** Legacy UI adapter: explicit preparation, pure planning, then existing cleanup. */
 export function getCurrentStudyWord(): TaskWords {
   const store = useBaseStore()
-  let dict = store.sdict
-  const start = Math.min(Math.max(Number(dict.lastLearnIndex) || 0, 0), dict.words.length)
-  let data: TaskWords = { new: [], review: [], startIndex: start, endIndex: start }
-  if (dict.library) data.libraryVersion = dict.library.version
-  let isTest = false
-  let words = dict.words.slice()
-  if (isTest) {
-    words = Array.from({ length: 10 }).map((v, i) => {
-      return getDefaultWord({ word: String(i) })
-    })
-  }
-
-  if (words?.length) {
-    const learning = getBookLearning(dict)
-    // A dict's source words are only present after it has been selected. This
-    // is the first point where legacy card ownership can be established safely.
-    migrateLegacyFsrsToBookLearning(dict, store.fsrsData)
-    const settingStore = useSettingStore()
-    data.settings = getBookTaskSettings(dict, settingStore.wordReviewRatio)
-    //忽略列表：简单词或已掌握
-    const ignoreSet = new Set([
-      ...[store.allIgnoreWordsSet, store.knownWordsSet][settingStore.ignoreSimpleWord ? 0 : 1],
-      ...learning.skippedWords.map(normalizeLearningWord),
-    ])
-    const perDay = dict.perDayStudyNumber
-    if (dict.units?.length) refreshUnitBookProgress(dict, ignoreSet)
-    const taskStart = isTest ? 1 : start
-    data.startIndex = taskStart
-    const complete = isTest ? true : dict.complete || taskStart >= words.length
-    const isEnd = taskStart >= words.length
-    const reviewRatio = learning.reviewRatio ?? settingStore.wordReviewRatio
-
-    let end = taskStart
-    if (dict.units?.length) {
-      const unitTask = selectUnitTaskWords(dict, getNewWordLimit(dict), ignoreSet)
-      data.new = unitTask.new
-      data.unitId = learning.selectedUnitId ?? ''
-      data.unitScannedWords = unitTask.scanned
-    } else if (!isEnd) {
-      //从start往后取perDay个单词，作为新词
-      for (let i = taskStart; i < words.length; i++) {
-        let item = words[i]
-        if (data.new.length >= perDay) break
-        if (!ignoreSet.has(normalizeLearningWord(item.word))) {
-          data.new.push(item)
-        }
-        end++
-      }
-    }
-    data.endIndex = end
-
-    //如果复习比大于等于1，或者已完成，才生成复习词
-    if (reviewRatio >= 1 || complete || isEnd) {
-      //Map建立索引，用于查找、包含
-      const wordMap = new Map(words.map(s => [normalizeLearningWord(s.word), s]))
-      //复习总数量;如果已结束那么复习比最小是1
-      const totalNeed = perDay * (isEnd ? reviewRatio || 1 : reviewRatio)
-      const now = Date.now()
-
-      let waitRemoveFromFsrsData = []
-
-      //取 due 到期的单词
-      let reviewWordStrList = Object.entries(store.currentFsrsData)
-        .filter(([word, card]) => {
-          //1、这里的due字段被json序列化之后又恢复是字符串了，所以要用dayjs比较
-          //2、要在当前学习这本词典里面
-          //3、不在新词里面
-          // console.log(`单词：${word},到期时间：${dayjs(card.due).format('YYYY-MM-DD HH:mm:ss')}`)
-          const wordKey = normalizeLearningWord(word)
-          let isMastered = ignoreSet.has(wordKey)
-          if (isMastered) {
-            waitRemoveFromFsrsData.push(wordKey)
-          }
-          return (
-            !isMastered &&
-            dayjs(card.due).valueOf() <= now &&
-            wordMap.has(wordKey) &&
-            !data.new.find(v => normalizeLearningWord(v.word) === wordKey)
-          )
-        })
-        .sort((a, b) => dayjs(a[1].due).valueOf() - dayjs(b[1].due).valueOf())
-        .map(([word]) => word)
-
-      waitRemoveFromFsrsData.map(word => {
-        delete store.currentFsrsData[word]
-      })
-      // console.log('fsrs 里 due 到期单词', reviewWordStrList)
-
-      data.review = shuffle(
-        reviewWordStrList
-          .slice(0, totalNeed)
-          .map(word => wordMap.get(normalizeLearningWord(word)))
-          .filter(obj => obj)
-      )
-      //如果数量不够再填充
-      if (data.review.length < totalNeed) {
-        // 固定填充逻辑
-        const learnedSet = new Set(learning.learnedWords)
-        let list = dict.units?.length
-          ? words.filter(item => learnedSet.has(normalizeLearningWord(item.word))).reverse()
-          : words.slice(0, taskStart).reverse()
-        if (complete && !dict.units?.length) list = list.concat(words.slice(end).reverse())
-        // 固定填充复习词需要过滤掉有FSRS记录的
-        let set = new Set(
-          Array.from(ignoreSet)
-            .concat(Object.keys(store.currentFsrsData))
-            .concat(data.new.map(v => normalizeLearningWord(v.word)))
-        )
-        list = list.filter(item => !set.has(normalizeLearningWord(item.word)))
-        data.review = data.review.concat(list.slice(0, totalNeed - data.review.length))
-      }
-    }
-  }
-  return data
+  const settings = useSettingStore()
+  const book = store.sdict
+  const startIndex = Math.min(Math.max(Number(book.lastLearnIndex) || 0, 0), book.words.length)
+  const ignoredWords = settings.ignoreSimpleWord ? store.allIgnoreWordsSet : store.knownWordsSet
+  prepareStudyBook(book, store.fsrsData, ignoredWords)
+  const plan = planStudyTask({
+    book, ignoredWords, startIndex,
+    defaultReviewRatio: settings.wordReviewRatio,
+    now: Date.now(), random: Math.random,
+  })
+  applyStudyCardCleanup(book, plan.ignoredCardKeys)
+  return plan.task
 }
 
 export function useGetDict() {

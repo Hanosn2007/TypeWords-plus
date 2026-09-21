@@ -383,8 +383,17 @@ async function startPractice(practiceMode: WordPracticeMode, resetCache: boolean
   }
 }
 
-function freePractice() {
-  startPractice(WordPracticeMode.Free, settingStore.wordPracticeMode !== WordPracticeMode.Free)
+async function freePractice() {
+  if (isApplyingBookSettings || isSwitchingBook || isChangingUnit) return
+  const freePersistence = usePracticeWordPersistence({ free: () => true })
+  const cache = await freePersistence.loadLocal(String(store.sdict.id))
+  const unitId = getBookLearning(store.sdict).selectedUnitId ?? ''
+  const freeData = cache ?? createEmptyPracticeData()
+  if (!cache) freeData.taskWords = { new: [], review: getUnitWords(store.sdict, unitId), unitId, unitReview: true }
+  if (!freeData.taskWords.review.length && !freeData.taskWords.new.length) return Toast.warning('当前范围没有可练习的词。')
+  settingStore.wordPracticeMode = WordPracticeMode.Free
+  settingStore.first = false
+  nav(WordPracticeModeUrlMap[WordPracticeMode.Free] + '/' + store.sdict.id, {}, { ...freeData, practiceMode: WordPracticeMode.Free, dictId: String(store.sdict.id) })
 }
 
 function systemPractice() {
@@ -508,8 +517,15 @@ function check(cb: Function) {
   }
 }
 
-function onBookSettingsSaved() {
-  if (!isSaveData) practiceData.taskWords = getCurrentStudyWord()
+async function onBookSettingsSaved() {
+  isSwitchingBook = true
+  try {
+  const cache = await wordPersistence.loadLocal(String(store.sdict.id))
+  practiceData = cache ?? createEmptyPracticeData()
+  isSaveData = !!cache
+  if (cache?.practiceMode !== undefined) settingStore.wordPracticeMode = cache.practiceMode
+  if (!cache) practiceData.taskWords = getCurrentStudyWord()
+  } finally { isSwitchingBook = false }
 }
 
 async function reviewCurrentUnit() {
@@ -639,7 +655,7 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <BookUnitPanel :disabled="isSaveData || isSwitchingBook || isApplyingBookSettings" @changed="onBookSettingsSaved" @review="reviewCurrentUnit" @busy="isChangingUnit = $event" />
+    <BookUnitPanel :disabled="isSwitchingBook || isApplyingBookSettings" @changed="onBookSettingsSaved" @review="reviewCurrentUnit" @busy="isChangingUnit = $event" />
 
     <div class="card flex flex-col md:flex-row gap-4">
       <div class="flex-1 flex flex-col justify-between">

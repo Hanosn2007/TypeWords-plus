@@ -160,4 +160,12 @@ test('local writes warn while pending and failures do not claim data is saved', 
   assert.equal(h.api.closeProtectionMessage(), '')
   await assert.rejects(h.api.serializeSyncLocalWrite(() => Promise.reject(new Error('disk full'))))
   assert.match(h.api.closeProtectionMessage(), /本机保存失败/)
+  await assert.rejects(h.api.allowSavedReload(), /本机保存失败/)
+})
+
+test('explicit update can reload after local flush without a second cloud-close prompt', async () => {
+  const h=setup(); h.api.scheduleSafeSync()
+  assert.notEqual(h.api.closeProtectionMessage(),'')
+  await h.api.allowSavedReload()
+  assert.equal(h.api.closeProtectionMessage(),'')
 })

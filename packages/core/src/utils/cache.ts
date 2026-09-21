@@ -13,10 +13,9 @@ export function subscribePracticeWordCache(listener: () => void): () => void {
 
 export const PRACTICE_WORD_CACHE: CacheConfig = {
   key: 'PracticeSaveWord',
-  // The payload itself has schemaVersion: 2. Keep this sync-row version at 1
-  // so existing v1 cloud rows still participate in timestamp comparison and
-  // can be migrated into the bundle on first use.
-  version: 1,
+  // Format 3 separates book/unit/study-kind sessions. The outer version also
+  // prevents old clients from applying an incompatible cloud snapshot.
+  version: 3,
 }
 export const PRACTICE_ARTICLE_CACHE: CacheConfig = {
   key: 'PracticeSaveArticle',
@@ -78,7 +77,7 @@ export type PracticeWordCacheBundleEntry = {
 }
 
 export type PracticeWordCacheBundle = {
-  schemaVersion: 2
+  schemaVersion: 2 | 3
   entries: Record<string, PracticeWordCacheBundleEntry>
   /** Old caches without a dictId cannot be assigned to a dictionary safely. */
   unresolvedLegacy?: PracticeWordCacheBundleEntry
@@ -164,7 +163,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isPracticeWordCacheBundle(value: unknown): value is PracticeWordCacheBundle {
-  return isRecord(value) && value.schemaVersion === 2 && isRecord(value.entries)
+  return isRecord(value) && (value.schemaVersion === 2 || value.schemaVersion === 3) && isRecord(value.entries)
+}
+
+export function practiceScopeKey(dictId: string, unitId = '', free = false): string {
+  return JSON.stringify([dictId, unitId, free ? 'free' : 'study'])
+}
+
+export function cacheScopeKey(data: PracticeWordCacheStored, fallbackDictId = ''): string {
+  const task = 'taskWordsStr' in data ? data.taskWordsStr : data.taskWords
+  return practiceScopeKey(data.dictId ?? fallbackDictId, task?.unitId ?? '', data.practiceMode === 1)
+}
+
+/** Pure, idempotent migration. Each old session retains its exact payload and clock. */
+export function upgradePracticeScopes(payload: PracticeWordCachePayload | undefined, updatedAt?: string): PracticeWordCacheBundle {
+  const old = normalizePracticeWordCacheBundle(payload, updatedAt)
+  if (!old) return { schemaVersion: 3, entries: {} }
+  if (old.schemaVersion === 3) return old
+  const entries: PracticeWordCacheBundle['entries'] = {}
+  for (const [dictId, entry] of Object.entries(old.entries)) {
+    const key = entry.data ? cacheScopeKey(entry.data, dictId) : practiceScopeKey(dictId)
+    entries[key] = entry
+  }
+  return { ...old, schemaVersion: 3, entries }
 }
 
 function getCacheDictId(cache: PracticeWordCacheStored): string | null {
@@ -190,9 +211,12 @@ export function normalizePracticeWordCacheBundle(
   fallbackUpdatedAt?: string
 ): PracticeWordCacheBundle | null {
   if (!payload) return null
+  if ('schemaVersion' in payload && typeof payload.schemaVersion === 'number' && payload.schemaVersion > 3) {
+    throw new Error('练习数据来自更新版本，请更新网页；原数据未改动。')
+  }
   if (isPracticeWordCacheBundle(payload)) {
     return {
-      schemaVersion: 2,
+      schemaVersion: payload.schemaVersion,
       entries: { ...payload.entries },
       ...(payload.unresolvedLegacy ? { unresolvedLegacy: payload.unresolvedLegacy } : {}),
     }
@@ -212,8 +236,9 @@ export function mergePracticeWordCacheBundles(
   localUpdatedAt?: string,
   remoteUpdatedAt?: string
 ): PracticeWordCacheBundle | null {
-  const local = normalizePracticeWordCacheBundle(localPayload, localUpdatedAt)
-  const remote = normalizePracticeWordCacheBundle(remotePayload, remoteUpdatedAt)
+  const scoped = (isPracticeWordCacheBundle(localPayload) && localPayload.schemaVersion === 3) || (isPracticeWordCacheBundle(remotePayload) && remotePayload.schemaVersion === 3)
+  const local = scoped ? upgradePracticeScopes(localPayload, localUpdatedAt) : normalizePracticeWordCacheBundle(localPayload, localUpdatedAt)
+  const remote = scoped ? upgradePracticeScopes(remotePayload, remoteUpdatedAt) : normalizePracticeWordCacheBundle(remotePayload, remoteUpdatedAt)
   if (!local) return remote
   if (!remote) return local
 
@@ -224,7 +249,7 @@ export function mergePracticeWordCacheBundles(
   }
   const unresolvedLegacy = newerEntry(local.unresolvedLegacy, remote.unresolvedLegacy)
   return {
-    schemaVersion: 2,
+    schemaVersion: scoped ? 3 : 2,
     entries,
     ...(unresolvedLegacy ? { unresolvedLegacy } : {}),
   }
@@ -232,20 +257,25 @@ export function mergePracticeWordCacheBundles(
 
 export function getPracticeWordCacheFromPayload(
   payload: PracticeWordCachePayload | undefined,
-  dictId?: string
+  dictId?: string,
+  unitId = '',
+  free = false
 ): PracticeWordCacheStored | null {
   if (!payload) return null
   if (isPracticeWordCacheBundle(payload)) {
     if (!dictId) return null
-    return payload.entries[dictId]?.data ?? null
+    if (payload.schemaVersion === 3) return payload.entries[practiceScopeKey(dictId, unitId, free)]?.data ?? null
+    const data = payload.entries[dictId]?.data ?? null
+    if (!data) return null
+    return cacheScopeKey(data, dictId) === practiceScopeKey(dictId, unitId, free) ? data : null
   }
   if (!dictId || payload.dictId == null || String(payload.dictId) === String(dictId)) return payload
   return null
 }
 
 /** Read one dictionary's session. Use getPracticeWordCacheBundleLocal for the complete sync payload. */
-export async function getPracticeWordCacheLocal(dictId?: string): Promise<PracticeWordCacheStored | null> {
-  return getPracticeWordCacheFromPayload(await getLocal<PracticeWordCachePayload>(PRACTICE_WORD_CACHE), dictId)
+export async function getPracticeWordCacheLocal(dictId?: string, unitId = '', free = false): Promise<PracticeWordCacheStored | null> {
+  return getPracticeWordCacheFromPayload(await getLocal<PracticeWordCachePayload>(PRACTICE_WORD_CACHE), dictId, unitId, free)
 }
 
 export async function getPracticeWordCacheBundleLocal(): Promise<PracticeWordCacheBundle | null> {

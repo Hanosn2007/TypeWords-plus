@@ -70,7 +70,20 @@ func (s *server) safeSyncGet(w http.ResponseWriter, r *http.Request, user userVi
 		writeError(w, 500, "unable to read snapshot")
 		return
 	}
+	if snapshotNeedsScopes(snapshot) && r.Header.Get("X-TypeWords-Data-Format") != "3" {
+		writeError(w, 428, "please update the page before reading unit-scoped learning data")
+		return
+	}
 	writeJSON(w, 200, apiResponse{Success: true, Code: 200, Data: snapshot})
+}
+
+func snapshotNeedsScopes(snapshot syncSnapshot) bool {
+	for _, row := range snapshot.Rows {
+		if row.Type == "practice_word" && row.DataVersion != nil && *row.DataVersion >= 3 {
+			return true
+		}
+	}
+	return false
 }
 
 func saveSyncHistory(tx *sql.Tx, userID int64, snapshot syncSnapshot, reason string, now time.Time) error {
@@ -170,6 +183,14 @@ func (s *server) safeSyncPut(w http.ResponseWriter, r *http.Request, user userVi
 	current, err := readSyncSnapshot(tx, user.ID)
 	if err != nil {
 		writeError(w, 500, "unable to read snapshot")
+		return
+	}
+	if snapshotNeedsScopes(current) && (r.Header.Get("X-TypeWords-Data-Format") != "3" || !snapshotNeedsScopes(syncSnapshot{Rows: p.Rows})) {
+		writeError(w, 428, "please update the page; downgrading unit-scoped learning data is not supported")
+		return
+	}
+	if snapshotNeedsScopes(syncSnapshot{Rows: p.Rows}) && r.Header.Get("X-TypeWords-Data-Format") != "3" {
+		writeError(w, 428, "unit-scoped learning requires an updated client")
 		return
 	}
 	if current.Revision != *p.ExpectedRevision {

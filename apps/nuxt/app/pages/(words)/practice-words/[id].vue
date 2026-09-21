@@ -77,7 +77,8 @@ const practiceDictId = String(route.params.id)
 const store = useBaseStore()
 const statStore = usePracticeStore()
 const dataSync = useDataSyncPersistence()
-const wordPersistence = usePracticeWordPersistence()
+let sessionMode = settingStore.wordPracticeMode
+const wordPersistence = usePracticeWordPersistence({ free: () => sessionMode === WordPracticeMode.Free })
 let { getGradeByWrongTimes } = useGetGradeByWrongTimes()
 let { nextCard } = useNextCard()
 const typingRef: any = $ref()
@@ -258,6 +259,9 @@ watch(
   { immediate: true }
 )
 
+function saveBeforeUpdate(event: Event) {
+  ;(event as CustomEvent<Promise<unknown>[]>).detail.push(savePracticeDataIns('update'))
+}
 const onvisibilitychange = async () => {
   isFocus = !document.hidden
   if (isFocus) {
@@ -306,11 +310,13 @@ onMounted(async () => {
   }
   document.removeEventListener('visibilitychange', onvisibilitychange)
   document.addEventListener('visibilitychange', onvisibilitychange)
+  window.addEventListener('typewords-save-before-update', saveBeforeUpdate)
   window.removeEventListener('pagehide', onPageHide)
   window.addEventListener('pagehide', onPageHide)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('typewords-save-before-update', saveBeforeUpdate)
   document.removeEventListener('visibilitychange', onvisibilitychange)
   window.removeEventListener('pagehide', onPageHide)
   clearVisibilityResumeTimer()
@@ -432,6 +438,7 @@ watch(
 )
 
 async function initData(initVal?: TaskWords, init: boolean = false) {
+  sessionMode = settingStore.wordPracticeMode
   isIniting.value = true
   taskSettled = false
   //只有初始化时，才读取缓存（本地 + 可选 Supabase）
@@ -459,13 +466,14 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
       return await initData(d.taskWords)
     }
     if (d.practiceMode !== undefined) settingStore.wordPracticeMode = d.practiceMode
+    sessionMode = settingStore.wordPracticeMode
     console.log('initData')
     taskWords = Object.assign(taskWords, { settings: undefined, unitId: undefined, unitScannedWords: undefined, unitReview: undefined, libraryVersion: undefined }, d.taskWords)
     skipCheckpoint = d.skipCheckpoint ?? null
     //这里直接赋值的话，provide后的inject获取不到最新值
     data = getDefaultPracticeData(data, d.practiceData)
     const learning = getBookLearning(store.sdict)
-    learning.skippedWords = Array.from(new Set([...learning.skippedWords, ...(data.duplicateSkippedWords ?? [])]))
+    if (settingStore.wordPracticeMode !== WordPracticeMode.Free) learning.skippedWords = Array.from(new Set([...learning.skippedWords, ...(data.duplicateSkippedWords ?? [])]))
     statStore.$patch(d.statStoreData)
     // A cache created before unified timing has no accounting marker. Preserve
     // its saved spend as the legacy baseline before appending any new segment.
@@ -560,7 +568,7 @@ async function initData(initVal?: TaskWords, init: boolean = false) {
     taskWords.new = []
     taskWords.endIndex = taskWords.startIndex ?? store.sdict.lastLearnIndex
     taskWords.unitScannedWords = []
-    if (store.sdict.units?.length) taskWords.unitReview = true
+    taskWords.unitReview = true
   }
 
   // 初始化 Question
@@ -627,7 +635,7 @@ async function skipDuplicateWord() {
       practiceType: activePracticeType,
     }
     const learning = getBookLearning(store.sdict)
-    if (!learning.skippedWords.includes(key)) learning.skippedWords.push(key)
+    if (settingStore.wordPracticeMode !== WordPracticeMode.Free && !learning.skippedWords.includes(key)) learning.skippedWords.push(key)
     data.duplicateSkippedWords = Array.from(new Set([...(data.duplicateSkippedWords ?? []), key]))
     statStore.skippedWordNumber = data.duplicateSkippedWords.length
     if (!data.excludeWords.includes(word.word)) data.excludeWords.push(word.word)
@@ -810,7 +818,9 @@ async function complete() {
     syncPracticeTimer()
     clearInterval(timer)
 
+    const freeSession = sessionMode === WordPracticeMode.Free
     const sessionLearning = getBookLearning(store.sdict)
+    if (!freeSession) {
     sessionLearning.skippedWords = Array.from(new Set([...sessionLearning.skippedWords, ...(data.duplicateSkippedWords ?? [])]))
     //如果 shuffle 数组不为空，就说明是复习，不用修改 lastLearnIndex
     if (settingStore.wordPracticeMode !== WordPracticeMode.Shuffle) {
@@ -828,12 +838,13 @@ async function complete() {
       }
     }
 
+    }
     const skipped = new Set(data.duplicateSkippedWords ?? [])
     const learning = getBookLearning(store.sdict)
     const practiced = (store.sdict.units?.length ? [] : [...taskWords.new, ...taskWords.review])
       .map(item => normalizeLearningWord(item.word)).filter(key => key && !skipped.has(key) && !learning.masteredWords.includes(key))
-    learning.learnedWords = Array.from(new Set([...learning.learnedWords, ...practiced]))
-    if (store.sdict.units?.length && !taskWords.unitReview) {
+    if (!freeSession) learning.learnedWords = Array.from(new Set([...learning.learnedWords, ...practiced]))
+    if (!freeSession && store.sdict.units?.length && !taskWords.unitReview) {
       refreshUnitBookProgress(store.sdict, settingStore.ignoreSimpleWord ? store.allIgnoreWordsSet : store.knownWordsSet)
     }
     statStore.skippedWordNumber = skipped.size
@@ -849,7 +860,7 @@ async function complete() {
     // 按统一有效时长分日生成 Statistics 记录。
     flushStatToStore(statStore.$state)
 
-    for (const [word, wrongTimes] of Object.entries(data.wrongTimesMap)) {
+    for (const [word, wrongTimes] of Object.entries(freeSession ? {} : data.wrongTimesMap)) {
       if (!normalizeLearningWord(word)) continue
       let rating = data.ratingMap[word]
       if (rating !== undefined) {
@@ -876,6 +887,8 @@ async function complete() {
     // Persist this marker in the same dictionary snapshot as statistics/progress.
     // A refresh during remote sync must not restore the already-settled local cache.
     learning.lastCompletedPracticeAt = statStore.startDate
+    learning.completedPracticeByScope ??= {}
+    learning.completedPracticeByScope[JSON.stringify([taskWords.unitId ?? '', freeSession ? 'free' : 'study'])] = statStore.startDate
     await dataSync.saveDictState(store.$state, { pullWhenRemoteNewer: false })
     await wordPersistence.clear(practiceDictId)
     taskSettled = true
@@ -1153,7 +1166,7 @@ async function savePracticeDataIns(where?: string, force: boolean = false) {
   await wordPersistence.save({
     dictId: practiceDictId,
     practiceType: activePracticeType,
-    practiceMode: settingStore.wordPracticeMode,
+    practiceMode: sessionMode,
     taskWords,
     practiceData: cloneDeep(data),
     statStoreData: cloneDeep(statStore.$state),
@@ -1178,7 +1191,7 @@ function repeat() {
     temp.review = shuffle(temp.review.filter(v => !ignoreSet.has(v.word)))
   } else {
     //将学习进度减回去
-    if (!store.sdict.units?.length) {
+    if (!store.sdict.units?.length && settingStore.wordPracticeMode !== WordPracticeMode.Free) {
       store.sdict.lastLearnIndex = taskWords.startIndex ?? Math.max(0, store.sdict.lastLearnIndex - taskWords.new.length)
     } else if (isComplete) {
       temp.review = [...temp.new, ...temp.review]
@@ -1258,6 +1271,7 @@ function toggleConciseMode() {
 
 async function continueStudy() {
   if (settling) return
+  if (settingStore.wordPracticeMode === WordPracticeMode.Free) { await router.push('/words'); return }
   if (store.sdict.units?.length) {
     if (!isComplete) {
       Toast.warning('请先完成本轮，再继续下一组或切换单元。')
@@ -1315,6 +1329,7 @@ async function continueStudy() {
 }
 
 async function jumpToGroup(group: number) {
+  if (settingStore.wordPracticeMode === WordPracticeMode.Free) { Toast.warning('自由练习不会改变正式学习进度。请返回首页选择范围。'); return }
   if (store.sdict.units?.length) {
     Toast.warning('单元学习请在首页选择 Lesson。')
     return

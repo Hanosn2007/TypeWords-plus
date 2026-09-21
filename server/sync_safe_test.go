@@ -1,11 +1,50 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestScopedSnapshotRejectsOldClientsAndDowngrades(t *testing.T) {
+	_, mux := newTestServer(t)
+	auth := registerTestUser(t, mux, "scopes@example.com")
+	call := func(method string, p interface{}, version string) int {
+		body, _ := json.Marshal(p)
+		req := httptest.NewRequest(method, "/api/sync/snapshot", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+auth.Token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-TypeWords-Data-Format", version)
+		res := httptest.NewRecorder()
+		mux.ServeHTTP(res, req)
+		return res.Code
+	}
+	p := snapshotPayload(0, "scope-request-00001", map[string]int{"learned": 82})
+	rows := p["rows"].([]map[string]interface{})
+	rows[2]["data_version"] = 3
+	rows[2]["data"] = map[string]interface{}{"schemaVersion": 3, "entries": map[string]interface{}{}}
+	if got := call("PUT", p, "3"); got != 200 {
+		t.Fatalf("upgrade: %d", got)
+	}
+	if got := call("GET", nil, ""); got != 428 {
+		t.Fatalf("old read: %d", got)
+	}
+	if got := call("GET", nil, "3"); got != 200 {
+		t.Fatalf("new read: %d", got)
+	}
+	if got := call("PUT", snapshotPayload(1, "scope-downgrade-001", nil), "3"); got != 428 {
+		t.Fatalf("downgrade: %d", got)
+	}
+	p["expectedRevision"] = 1
+	p["requestId"] = "scope-old-write-001"
+	if got := call("PUT", p, ""); got != 428 {
+		t.Fatalf("old write: %d", got)
+	}
+}
 
 func snapshotPayload(revision int64, id string, value interface{}) map[string]interface{} {
 	return map[string]interface{}{"expectedRevision": revision, "requestId": id, "rows": []map[string]interface{}{

@@ -15,6 +15,7 @@ import {
   type PracticeArticleCache,
   type PracticeWordCachePayload,
   mergePracticeWordCacheBundles,
+  upgradePracticeScopes,
   setPracticeArticleCacheLocal,
   setPracticeWordCacheLocal,
 } from '../utils/cache'
@@ -135,7 +136,7 @@ async function persistLocalState(type: SyncDataType, val: unknown, updated_at?: 
 async function persistLocalStateUnlocked(type: SyncDataType, val: unknown, updated_at?: string): Promise<void> {
   // console.log('persistLocalState',type,updated_at)
   if (type === SyncDataType.practice_word) {
-    await setPracticeWordCacheLocal(val as PracticeWordCachePayload, updated_at)
+    await setPracticeWordCacheLocal(upgradePracticeScopes(val as PracticeWordCachePayload), updated_at)
     return
   }
   if (type === SyncDataType.practice_article) {
@@ -449,6 +450,11 @@ export function useDataSyncPersistence() {
   }
   configureSafeSync({
     read: readSafeSnapshot,
+    upgrade: rows => rows.map(row => {
+      if (row.type !== SyncDataType.practice_word) return row
+      if (row.data_version > PRACTICE_WORD_CACHE.version) throw new Error('备份来自更新版本，请先更新网页。')
+      return { ...row, data: upgradePracticeScopes(row.data), data_version: PRACTICE_WORD_CACHE.version }
+    }),
     apply: async (rows, expected) => {
       const normalized = normalizeSyncRows(rows)
       for (const row of normalized) {
@@ -466,7 +472,7 @@ export function useDataSyncPersistence() {
         const values: [IDBValidKey, string][] = normalized.map(row => {
           const type = row.type as SyncDataType
           const key = type === SyncDataType.practice_word ? PRACTICE_WORD_CACHE.key : type === SyncDataType.practice_article ? PRACTICE_ARTICLE_CACHE.key : getPersistKey(type)
-          const val = type === SyncDataType.dict ? dict : type === SyncDataType.setting ? setting : row.data
+          const val = type === SyncDataType.dict ? dict : type === SyncDataType.setting ? setting : type === SyncDataType.practice_word ? upgradePracticeScopes(row.data) : row.data
           return [key, JSON.stringify({ val, version: getDataVersion(type), updated_at: now })]
         })
         // A single IDB transaction keeps dictionary completion and task caches together.

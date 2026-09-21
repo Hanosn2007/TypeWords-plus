@@ -231,6 +231,7 @@ export interface BookLearning {
   newWordMode?: NewWordMode
   /** Last locally settled round; prevents restoring its cache after an interrupted clear. */
   lastCompletedPracticeAt?: number
+  completedPracticeByScope?: Record<string, number>
   /** 已处理成员包含跳过/忽略词，独立于 learnedWords 的“实际学过”。 */
   unitProcessedWords?: string[]
   /** 仅用于防止旧全局 FSRS 在每次重新载入词书时重复回填。 */
