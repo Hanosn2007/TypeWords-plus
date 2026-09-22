@@ -657,8 +657,8 @@ onUnmounted(() => {
 
     <BookUnitPanel :disabled="isSwitchingBook || isApplyingBookSettings" @changed="onBookSettingsSaved" @review="reviewCurrentUnit" @busy="isChangingUnit = $event" />
 
-    <div class="card flex flex-col md:flex-row gap-4">
-      <div class="flex-1 flex flex-col justify-between">
+    <div class="card study-summary flex flex-col xl:flex-row gap-4">
+      <div class="flex-1 min-w-0 flex flex-col justify-between">
         <div class="flex gap-3">
           <div class="p-1 center rounded-full bg-white">
             <IconFluentBookNumber20Filled class="text-xl color-link" />
@@ -687,7 +687,7 @@ onUnmounted(() => {
               <span> {{ store.sdict.units?.length ? '已处理 ' : '' }}{{ store.currentStudyHandledCount }} / {{ store.sdict.length }} 词</span>
             </div>
           </div>
-          <div class="flex items-center mt-4 gap-4">
+          <div class="flex flex-wrap items-center mt-4 gap-4">
             <BaseButton type="info" size="small" @click="router.push('/dict-list')">
               <div class="center gap-1">
                 <IconFluentArrowSwap20Regular />
@@ -725,7 +725,7 @@ onUnmounted(() => {
           </BaseButton>
         </div>
       </div>
-      <div class="flex-1 mt-4 md:mt-0" :class="!store.sdict.id && 'opacity-30 cursor-not-allowed'">
+      <div class="flex-1 min-w-0 mt-4 xl:mt-0" :class="!store.sdict.id && 'opacity-30 cursor-not-allowed'">
         <div class="flex flex-wrap gap-3 justify-between">
           <div class="flex items-center gap-2">
             <div class="p-2 center rounded-full bg-white">
@@ -757,7 +757,7 @@ onUnmounted(() => {
             <div class="txt">{{ $t('review') }}</div>
           </div>
         </div>
-        <div class="flex items-end mt-4 gap-4 btn-no-margin">
+        <div class="flex flex-wrap items-end mt-4 gap-4 btn-no-margin">
           <OptionButton
             :class="settingStore.wordPracticeMode !== WordPracticeMode.Free ? 'flex-1 orange-btn' : 'primary-btn'"
           >
@@ -864,7 +864,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div class="card flex flex-col md:flex-row gap-4 xl:gap-20 p-4 md:p-6">
+    <div class="card flex flex-col xl:flex-row gap-4 xl:gap-10 p-4 md:p-6">
       <div class="flex-1 flex flex-col gap-3 min-w-0">
         <div class="title">统计</div>
         <div class="flex gap-3 items-center w-full">
@@ -1026,6 +1026,7 @@ onUnmounted(() => {
 }
 
 .learning-book-card {
+  flex-shrink: 0;
   @apply w-44 rounded-xl p-3 border border-gray-200 bg-[var(--bg-history)] transition-colors;
 
   &:hover:not(:disabled) {
@@ -1055,12 +1056,15 @@ onUnmounted(() => {
 }
 
 .stat2 {
+  min-width: 0;
   @extend .stat;
   @apply py-4 flex-1;
   width: unset;
 
   .num {
-    @apply text-2xl break-keep;
+    font-size: clamp(1rem, 2vw, 1.5rem);
+    overflow-wrap: anywhere;
   }
 }
+.study-summary { overflow-wrap: anywhere; }
 </style>

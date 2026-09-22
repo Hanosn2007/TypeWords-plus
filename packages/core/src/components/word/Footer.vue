@@ -347,7 +347,7 @@ const stages = $computed(() => {
         </div>
       </div>
     </div>
-    <div class="progress-wrap flex gap-3 items-center color-gray">
+    <div v-show="!settingStore.showToolbar" class="progress-wrap flex gap-3 items-center color-gray">
       <span class="shrink-0">{{ status }}</span>
       <StageProgress :stages="stages" />
       <Tooltip title="进度 / 错误数 / 单词数">
@@ -363,6 +363,7 @@ const stages = $computed(() => {
 
 <style scoped lang="scss">
 .footer {
+  max-width: 100%;
   flex-shrink: 0;
   width: var(--toolbar-width);
   position: relative;
@@ -397,6 +398,7 @@ const stages = $computed(() => {
 
     .footer-main-row {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       justify-content: space-between;
       gap: 1rem;
@@ -411,6 +413,9 @@ const stages = $computed(() => {
       font-size: 0.75rem;
       white-space: nowrap;
     }
+    #toolbar-icons { flex-wrap: wrap; min-width: 0; gap: .4rem; }
+    .stat { flex-wrap: wrap; }
+    .stat .row { flex-shrink: 0; white-space: nowrap; }
   }
 
   .progress-wrap {
@@ -425,7 +430,7 @@ const stages = $computed(() => {
 
   .arrow {
     position: absolute;
-    top: -40%;
+    top: -2.25rem;
     left: 50%;
     cursor: pointer;
     transition: all 0.5s;
@@ -434,7 +439,7 @@ const stages = $computed(() => {
     font-size: 1.2rem;
 
     &.down {
-      top: -90%;
+      top: -2.25rem;
       transform: rotate(90deg);
     }
   }

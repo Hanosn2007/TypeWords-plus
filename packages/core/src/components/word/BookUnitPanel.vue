@@ -144,7 +144,7 @@ async function onSelect(event: Event) {
 .unit-heading { justify-content: space-between; margin-bottom: .85rem; }
 .unit-controls { margin-bottom: .75rem; }
 .unit-controls label { font-weight: 600; }
-.unit-controls select { min-width: 12rem; padding: .6rem .8rem; border: 1px solid var(--color-line); border-radius: .45rem; background: var(--bg-card-secend); color: inherit; }
+.unit-controls select { min-width: min(12rem, 100%); max-width: 100%; box-sizing: border-box; padding: .6rem .8rem; border: 1px solid var(--color-line); border-radius: .45rem; background: var(--bg-card-secend); color: inherit; }
 .unit-hint { font-size: .85rem; color: var(--color-font-2); line-height: 1.7; margin: .3rem 0 0; }
 .unit-controls select:disabled { opacity: .6; }
 @media (max-width: 640px) { .unit-controls select { flex: 1; } }

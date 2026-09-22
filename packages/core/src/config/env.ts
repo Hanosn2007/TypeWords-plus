@@ -2,12 +2,14 @@ import { offset } from '@floating-ui/dom'
 //这里合并导入，打包会报错
 import { ShortcutKey, WordPracticeMode, WordPracticeStage } from '../types/enum.ts'
 
-export const GITHUB = 'https://github.com/zyronon/TypeWords'
-export const Host = 'typewords.cc'
+export const GITHUB = 'https://github.com/Hanosn2007/TypeWords-plus'
+export const UPSTREAM_GITHUB = 'https://github.com/zyronon/TypeWords'
+export const Host = 'hanson07101.top'
 export const Old_Host = '2study.top'
-export const EMAIL = 'zyronon@163.com'
+// Historical service email is not the support channel for this fork.
+export const SUPPORT_URL = GITHUB + '/issues'
 export const Origin = `https://${Host}`
-export const APP_NAME = 'Type Words'
+export const APP_NAME = 'TypeWords Plus'
 export const IS_DEV = import.meta.env.MODE === 'development'
 
 const common = {

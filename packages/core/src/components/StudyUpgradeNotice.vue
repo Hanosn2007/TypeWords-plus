@@ -35,5 +35,5 @@ onUnmounted(() => window.removeEventListener('typewords-update-required', requir
   </div>
 </template>
 <style scoped>
-.upgrade-backdrop{position:fixed;inset:0;z-index:100001;background:#000b;display:grid;place-items:center;padding:1rem}.card{max-width:36rem;background:var(--bg-card,#25272a);color:var(--color-font,#ddd)}p{margin:1rem 0;line-height:1.7}button,a{display:inline-block;padding:.6rem 1rem;border-radius:.4rem;background:#2563eb;color:white;margin:.4rem}button:disabled{opacity:.5}
+.upgrade-backdrop{position:fixed;inset:0;z-index:100001;background:#000b;display:grid;place-items:center;padding:1rem}.card{width:min(36rem,100%);min-width:0;box-sizing:border-box;max-height:calc(100dvh - 2rem);overflow:auto;overflow-wrap:anywhere;background:var(--color-card-bg,#25272a);color:var(--color-main-text,#ddd)}p{margin:1rem 0;line-height:1.7}button,a{display:inline-block;max-width:100%;padding:.6rem 1rem;border-radius:.4rem;background:#2563eb;color:white;margin:.4rem}button:disabled{opacity:.5}
 </style>

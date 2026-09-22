@@ -18,7 +18,6 @@ onMounted(() => {
   theme = getSystemTheme()
   setTheme(theme)
   startTypingAnimation()
-  startCounterAnimation()
 })
 
 function toggleTheme() {
@@ -172,59 +171,22 @@ const playDemoKeyboard = usePlayKeyboardAudio()
 const playDemoBeep = usePlayBeep()
 const playDemoCorrect = usePlayCorrect()
 
-let statValues = $ref([0, 0, 0, 0])
-const statTargets = [7, 50, 3, 100]
-function startCounterAnimation() {
-  const duration = 1800
-  const startTime = performance.now()
-  function step(now: number) {
-    const p = Math.min((now - startTime) / duration, 1)
-    const e = 1 - Math.pow(1 - p, 3)
-    statValues = statTargets.map(t => Math.round(e * t))
-    if (p < 1) requestAnimationFrame(step)
-  }
-  const observer = new IntersectionObserver(
-    entries => {
-      if (entries[0].isIntersecting) {
-        requestAnimationFrame(step)
-        observer.disconnect()
-      }
-    },
-    { threshold: 0.3 }
-  )
-  const el = document.querySelector('.js-stats-bar')
-  if (el) observer.observe(el)
-}
-
 let faqOpen = $ref<number | null>(null)
 const faqs = $computed(() => [
-  { q: t('faq_data_storage_q'), a: t('faq_data_storage_a') },
-  { q: t('faq_platforms_q'), a: t('faq_platforms_a') },
-  { q: t('faq_difference_q'), a: t('faq_difference_a') },
-  { q: t('faq_custom_dict_q'), a: t('faq_custom_dict_a') },
+  { q: '数据如何跨设备继续？', a: '先保存在本机，登录本站账号后同步。切换设备前确认同步成功，版本冲突由你核对处理。' },
+  { q: '本站与上游是什么关系？', a: '基于 TypeWords 独立维护，保留 GPL-3.0 与作者署名；本站账号、发布和反馈独立。' },
+  { q: '手机与离线使用呢？', a: '桌面实体键盘是主要场景。移动端体验仍需验收；部分资源依赖网络，尚非完整离线应用。' },
+  { q: '可以自建、共享词书吗？', a: '支持个人导入和按单元学习。管理员发布的共享词书可在内置书库中找到，每人进度独立。' },
 ])
 function toggleFaq(i: number) {
   faqOpen = faqOpen === i ? null : i
 }
 
-const honors = $computed(() => [
-  { icon: '⭐', num: '8k+', label: 'GitHub Stars', sub: t('honor_stars_sub') },
-  { icon: '🔥', num: '10w+', label: t('honor_users_label'), sub: t('honor_users_sub') },
-  { icon: '💬', num: '100+', label: t('honor_contributors_label'), sub: t('honor_contributors_sub') },
-  { icon: '📦', num: '50+', label: t('honor_dicts_label'), sub: t('honor_dicts_sub') },
-])
-const stats = $computed(() => [
-  { suffix: '', label: t('stats_modes') },
-  { suffix: '+', label: t('stats_dicts') },
-  { suffix: '', label: t('stats_platforms') },
-  { suffix: '%', label: t('stats_free') },
-])
-
 let mobileMenuOpen = $ref(false)
 
 // ── SEO: 动态多语言 title + hreflang ──
-const seoTitle = $computed(() => t('seo_home_title'))
-const seoDesc = $computed(() => t('seo_home_desc'))
+const seoTitle = APP_NAME + ' · 单词、单元学习与同步'
+const seoDesc = '独立维护的单词与文章练习站点，支持 FSRS、共享词书、按单元续学和账号同步。'
 
 useSeoMeta({
   title: () => seoTitle,
@@ -233,7 +195,7 @@ useSeoMeta({
   ogDescription: () => seoDesc,
   twitterTitle: () => seoTitle,
   twitterDescription: () => seoDesc,
-  ogUrl: 'https://typewords.cc/',
+  ogUrl: Origin + '/',
 })
 
 const i18nLocaleMap: Record<string, string> = {
@@ -246,9 +208,9 @@ useHead({
     ...Object.entries(i18nLocaleMap).map(([code, hreflang]) => ({
       rel: 'alternate',
       hreflang,
-      href: 'https://typewords.cc/',
+      href: Origin + '/',
     })),
-    { rel: 'alternate', hreflang: 'x-default', href: 'https://typewords.cc/' },
+    { rel: 'alternate', hreflang: 'x-default', href: Origin + '/' },
   ],
 })
 </script>
@@ -326,7 +288,6 @@ useHead({
             <BaseIcon title="Github" noBg>
               <IconSimpleIconsGithub />
             </BaseIcon>
-            <span class="text-xl">8K</span>
           </a>
           <!-- Mobile menu button -->
           <button
@@ -384,7 +345,7 @@ useHead({
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" class="shrink-0">
                   <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
                 </svg>
-                8k+ GitHub Stars · {{ $t('hero_badge') }}
+                独立维护 · 开源项目
               </a>
             </div>
 
@@ -400,13 +361,13 @@ useHead({
               {{ $t('hero_tagline') }}
             </p>
             <p class="text-[clamp(.9rem,2vw,1.05rem)] text-[var(--hw-text-2)] mb-6 leading-[1.75] max-w-[520px] mx-auto lg:mx-0">
-              {{ $t('hero_desc') }}
+              按词书和单元安排学习，独立保留练习进度。使用 FSRS 复习，并通过本站账号在设备之间同步。
             </p>
 
             <!-- Core value pills -->
             <div class="flex gap-2 justify-center lg:justify-start flex-wrap mb-6">
               <span class="value-pill value-pill--purple">{{ $t('hero_pill_typing') }}</span>
-              <span class="value-pill value-pill--blue">{{ $t('hero_pill_fsrs') }}</span>
+              <span class="value-pill value-pill--blue">FSRS 间隔复习</span>
               <span class="value-pill value-pill--green">{{ $t('hero_pill_free') }}</span>
             </div>
 
@@ -419,25 +380,17 @@ useHead({
                 <span class="w-1.5 h-1.5 rounded-full bg-[#2563eb] shrink-0 opacity-80"></span>50+ {{ $t('hero_perk_dicts') }}
               </div>
               <div class="flex items-center gap-1.5 text-[.85rem] text-[var(--hw-text-2)]">
-                <span class="w-1.5 h-1.5 rounded-full bg-[#059669] shrink-0 opacity-80"></span>{{ $t('hero_perk_offline') }}
+                <span class="w-1.5 h-1.5 rounded-full bg-[#059669] shrink-0 opacity-80"></span>本机保存与账号同步
               </div>
               <div class="flex items-center gap-1.5 text-[.85rem] text-[var(--hw-text-2)]">
-                <span class="w-1.5 h-1.5 rounded-full bg-[#d97706] shrink-0 opacity-80"></span>{{ $t('hero_perk_platforms') }}
+                <span class="w-1.5 h-1.5 rounded-full bg-[#d97706] shrink-0 opacity-80"></span>桌面浏览器优先
               </div>
             </div>
 
             <!-- 手机端不支持提示 Banner -->
             <div class="block sm:hidden mb-3">
               <div class="flex items-center gap-3 bg-[rgba(234,179,8,.08)] border border-[rgba(234,179,8,.35)] text-[#92400e] rounded-xl px-4 py-3 leading-[1.6] text-left">
-                <span class="text-[.84rem]">{{ $t('mobile_not_optimized') }}</span>
-              </div>
-            </div>
-
-             <div class="mini-qr-card w-full box-border mb-3 flex sm:hidden">
-              <NuxtImg src="/imgs/mini.png" :alt="$t('mini_program')" class="w-24 h-24 rounded-xl shrink-0 border border-[var(--hw-border)]" />
-              <div class="flex flex-col gap-0.5 flex-1 min-w-0">
-                <div class="text-lg font-semibold text-[var(--hw-text)]">{{ $t('mini_program') }}</div>
-                <div class="text-sm text-[var(--hw-text-3)] leading-[1.5]">{{ $t('mini_program_desc') }}</div>
+                <span class="text-[.84rem]">以桌面实体键盘练习为主。手机可浏览词书，软键盘与缩放体验仍在持续完善。</span>
               </div>
             </div>
 
@@ -582,14 +535,6 @@ useHead({
               </div>
             </div>
 
-            <!-- ── 小程序码 — 独立卡片（不再混入 CTA 按钮旁） ── -->
-            <div class="mini-qr-card w-full box-border flex">
-              <NuxtImg src="/imgs/mini.png" :alt="$t('mini_program')" class="w-24 h-24 rounded-xl shrink-0 border border-[var(--hw-border)]" />
-              <div class="flex flex-col gap-0.5 flex-1 min-w-0">
-                <div class="text-lg font-semibold text-[var(--hw-text)]">{{ $t('mini_program') }}</div>
-                <div class="text-sm text-[var(--hw-text-3)] leading-[1.5]">{{ $t('mini_program_desc') }}</div>
-              </div>
-            </div>
           </div>
         </div>
       </section>
@@ -666,18 +611,6 @@ useHead({
         </div>
       </section>
 
-      <!-- ══════════════════ STATS BAR ══════════════════ -->
-      <section class="js-stats-bar py-14 px-4 sm:px-8 bg-[var(--hw-bg-card)] border-t border-b border-[var(--hw-border)]">
-        <div class="max-w-[900px] mx-auto flex items-center justify-center flex-wrap gap-0">
-          <div v-for="(item, i) in stats" :key="i" class="flex-1 min-w-40 text-center px-6 py-4">
-            <div class="text-[clamp(2rem,4vw,3rem)] font-black leading-[1.1] mb-1.5 bg-gradient-to-r from-[#bd34fe] to-[#41d1ff] bg-clip-text text-transparent [-webkit-background-clip:text] [-webkit-text-fill-color:transparent]">
-              {{ statValues[i] }}{{ item.suffix }}
-            </div>
-            <div class="text-[.88rem] text-[var(--hw-text-3)] leading-[1.4]">{{ item.label }}</div>
-          </div>
-        </div>
-      </section>
-
       <!-- ══════════════════ FEATURE GRID ══════════════════ -->
       <section class="py-20 px-4 sm:px-8">
         <div class="max-w-[1100px] mx-auto">
@@ -689,8 +622,8 @@ useHead({
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             <div class="feature-card">
               <span class="text-[2rem] mb-3.5 block">🧠</span>
-              <div class="text-[1rem] font-bold text-[var(--hw-text)] mb-2">{{ $t('feature_fsrs_title') }}</div>
-              <div class="text-[.9rem] text-[var(--hw-text-2)] leading-[1.7]">{{ $t('feature_fsrs_desc') }}</div>
+              <div class="text-[1rem] font-bold text-[var(--hw-text)] mb-2">FSRS 间隔复习调度</div>
+              <div class="text-[.9rem] text-[var(--hw-text-2)] leading-[1.7]">根据答题表现计算后续复习时间，安排当前词书的到期词。尚未提供个人记忆曲线图。</div>
             </div>
             <div class="feature-card">
               <span class="text-[2rem] mb-3.5 block">📚</span>
@@ -715,7 +648,7 @@ useHead({
             <div class="feature-card">
               <span class="text-[2rem] mb-3.5 block">☁️</span>
               <div class="text-[1rem] font-bold text-[var(--hw-text)] mb-2">{{ $t('feature_local_title') }}</div>
-              <div class="text-[.9rem] text-[var(--hw-text-2)] leading-[1.7]">{{ $t('feature_local_desc') }}</div>
+              <div class="text-[.9rem] text-[var(--hw-text-2)] leading-[1.7]">进度先保存在本机，登录本站账号后同步。换设备前确认同步成功，冲突由你核对处理；部分资源仍需要联网。</div>
             </div>
           </div>
         </div>
@@ -762,39 +695,6 @@ useHead({
             </div>
           </div>
           <p class="text-center text-[.85rem] text-[var(--hw-text-3)] m-0">{{ $t('shortcut_custom_hint') }}</p>
-        </div>
-      </section>
-
-      <!-- ══════════════════ HONORS ══════════════════ -->
-      <section class="py-20 px-4 sm:px-8">
-        <div class="max-w-[1100px] mx-auto">
-          <div class="text-center mb-12">
-            <div class="section-label">{{ $t('honors_section_label') }}</div>
-            <h2 class="section-h2">{{ $t('honors_section_title') }}</h2>
-            <p class="section-desc">{{ $t('honors_section_desc') }}</p>
-          </div>
-          <div class="grid grid-cols-2 md:grid-cols-4 gap-5 mb-10">
-            <div
-              v-for="item in honors"
-              :key="item.label"
-              class="bg-[var(--hw-bg-card)] border border-[var(--hw-border)] rounded-2xl p-7 text-center hover:-translate-y-1 hover:shadow-[var(--hw-shadow-md)] transition-all duration-200 cursor-default"
-            >
-              <div class="text-[2rem] mb-3">{{ item.icon }}</div>
-              <div class="text-[2rem] font-black leading-[1.1] mb-1 bg-gradient-to-r from-[#bd34fe] to-[#41d1ff] bg-clip-text text-transparent [-webkit-background-clip:text] [-webkit-text-fill-color:transparent]">{{ item.num }}</div>
-              <div class="text-[.95rem] font-bold text-[var(--hw-text)] mb-1">{{ item.label }}</div>
-              <div class="text-[.82rem] text-[var(--hw-text-3)] leading-[1.5]">{{ item.sub }}</div>
-            </div>
-          </div>
-          <div class="text-center">
-            <div class="text-[.78rem] font-semibold tracking-[.06em] uppercase text-[var(--hw-text-3)] mb-4">{{ $t('recommended_by') }}</div>
-            <div class="flex gap-3 justify-center flex-wrap">
-              <span class="inline-flex items-center gap-1.5 text-[.85rem] font-semibold text-[var(--hw-text-2)] px-4 py-2 rounded-full border border-[var(--hw-border)] bg-[var(--hw-bg-card)] hover:border-[#7c3aed] hover:text-[#7c3aed] transition-colors duration-150 cursor-default"><span>🐙</span> {{ $t('github_trending') }}</span>
-              <span class="inline-flex items-center gap-1.5 text-[.85rem] font-semibold text-[var(--hw-text-2)] px-4 py-2 rounded-full border border-[var(--hw-border)] bg-[var(--hw-bg-card)] hover:border-[#7c3aed] hover:text-[#7c3aed] transition-colors duration-150 cursor-default"><span>💬</span> {{ $t('v2ex_hot') }}</span>
-              <span class="inline-flex items-center gap-1.5 text-[.85rem] font-semibold text-[var(--hw-text-2)] px-4 py-2 rounded-full border border-[var(--hw-border)] bg-[var(--hw-bg-card)] hover:border-[#7c3aed] hover:text-[#7c3aed] transition-colors duration-150 cursor-default"><span>🏆</span> {{ $t('gitee_gvp') }}</span>
-              <span class="inline-flex items-center gap-1.5 text-[.85rem] font-semibold text-[var(--hw-text-2)] px-4 py-2 rounded-full border border-[var(--hw-border)] bg-[var(--hw-bg-card)] hover:border-[#7c3aed] hover:text-[#7c3aed] transition-colors duration-150 cursor-default"><span>📰</span> {{ $t('sspai_recommended') }}</span>
-              <span class="inline-flex items-center gap-1.5 text-[.85rem] font-semibold text-[var(--hw-text-2)] px-4 py-2 rounded-full border border-[var(--hw-border)] bg-[var(--hw-bg-card)] hover:border-[#7c3aed] hover:text-[#7c3aed] transition-colors duration-150 cursor-default"><span>⭐</span> {{ $t('gitcode_gstar') }}</span>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -874,8 +774,7 @@ useHead({
             <NuxtLink to="/help" class="footer-link">{{ $t('footer_help') }}</NuxtLink>
             <NuxtLink to="/feedback" class="footer-link">{{ $t('footer_feedback') }}</NuxtLink>
             <NuxtLink to="/doc" class="footer-link">{{ $t('footer_resources') }}</NuxtLink>
-            <a href="/privacy-policy.html" class="footer-link">{{ $t('footer_privacy') }}</a>
-            <a href="/user-agreement.html" class="footer-link">{{ $t('footer_agreement') }}</a>
+            <NuxtLink to="/help" class="footer-link">数据保存与同步说明</NuxtLink>
           </div>
           <div class="flex flex-col gap-2.5">
             <div class="text-[.8rem] font-bold tracking-[.06em] uppercase text-[var(--hw-text-3)] mb-1">{{ $t('footer_col_project') }}</div>
@@ -887,20 +786,8 @@ useHead({
       </div>
       <!-- Footer bottom -->
       <div class="max-w-[1100px] mx-auto py-5 flex items-center gap-4 flex-wrap">
-        <template v-if="locale === 'zh'">
-          <a
-            href="https://beian.mps.gov.cn/#/query/webSearch?code=51015602001426"
-            target="_blank"
-            class="text-[.8rem] text-[var(--hw-text-3)] no-underline hover:text-[var(--hw-text-2)] transition-colors duration-150"
-          >{{ $t('cn_limit_no1') }}</a>
-          <a
-            href="https://beian.miit.gov.cn/"
-            class="text-[.8rem] text-[var(--hw-text-3)] no-underline hover:text-[var(--hw-text-2)] transition-colors duration-150"
-            target="_blank"
-          >{{ $t('cn_limit_no2') }}</a>
-        </template>
-        <a href="mailto:zyronon@163.com" class="text-[.8rem] text-[var(--hw-text-3)] no-underline hover:text-[var(--hw-text-2)] transition-colors duration-150">{{ $t('contact_us') }}zyronon@163.com</a>
-        <span class="text-[.8rem] text-[var(--hw-text-3)] ml-auto">© 2026 {{ APP_NAME }}. All rights reserved.</span>
+        <NuxtLink to="/feedback" class="footer-link">本站反馈</NuxtLink>
+        <span class="text-[.8rem] text-[var(--hw-text-3)] ml-auto">{{ APP_NAME }} · 基于 TypeWords · GPL-3.0</span>
       </div>
     </footer>
   </div>

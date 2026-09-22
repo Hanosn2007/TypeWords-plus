@@ -19,7 +19,7 @@ useSeoMeta({
 <template>
   <BasePage>
     <div class="center">
-      <div class="card-white w-2/3 center-col pb-20">
+      <div class="card-white w-full max-w-232 center-col pb-10 box-border">
         <About />
       </div>
     </div>

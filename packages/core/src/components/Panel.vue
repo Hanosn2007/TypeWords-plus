@@ -30,10 +30,14 @@ provide(
 </template>
 <style scoped lang="scss">
 .panel {
+  max-width: 100%;
+  min-width: 0;
   width: var(--panel-width);
   background: var(--color-second);
   @apply shadow-lg flex flex-col h-full rounded-xl;
 }
+.panel header > .color-main { min-width: 0; overflow-wrap: anywhere; }
+.panel header :deep(.center) { flex-wrap: wrap; }
 
 // 移动端适配
 @media (max-width: 768px) {

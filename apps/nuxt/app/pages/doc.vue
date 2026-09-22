@@ -3,7 +3,7 @@ import { computed, defineAsyncComponent, ref } from 'vue'
 import { BaseButton, BasePage } from '@typewords/base'
 import QRCode from 'qrcode'
 import ResourceCard from '@typewords/core/components/ResourceCard.vue'
-import { APP_NAME, Origin } from '@typewords/core/config/env.ts'
+import { APP_NAME, GITHUB, Origin } from '@typewords/core/config/env.ts'
 import type { Resource } from '@typewords/core'
 
 let route = useRoute()
@@ -470,7 +470,7 @@ async function openLink(url: string, name?: string) {
           <ul class="space-y-2 text-gray-600 dark:text-gray-300">
             <li>所有资源均来自互联网收集，仅供学习交流使用</li>
             <li>
-              如果链接失效，请及时<a :href="`https://v.wjx.cn/vm/ev0W7fv.aspx#`" target="_blank">告知</a>，我会尽快更新
+              以下为外部学习资源，链接可能变化。若链接失效，可向<a :href="GITHUB + '/issues'" target="_blank" rel="noopener noreferrer">本项目反馈</a>。
             </li>
           </ul>
         </div>

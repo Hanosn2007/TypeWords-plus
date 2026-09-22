@@ -148,4 +148,5 @@ docker run -d -p 3000:80 --name typewords typewords
 
 再次感谢您对项目的贡献！🎉
 
+> 本文件为上游 TypeWords 历史说明。当前 TypeWords Plus 的功能、账号、反馈与部署以[仓库首页](../README.md)和本站帮助为准。
 

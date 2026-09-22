@@ -38,7 +38,7 @@ defineExpose({ openSoundTab })
 <template>
   <Dialog v-model="show" :title="$t('settings')" padding>
     <div class="setting text-lg w-200 h-[60vh] text-md flex flex-col">
-      <div class="flex flex-1 overflow-hidden">
+      <div class="settings-body flex flex-1 overflow-hidden">
         <div class="left">
           <div class="tabs">
             <button type="button" class="tab" :class="tabIndex === 5 && 'active'" @click="tabIndex = 5" v-if="type === 'word'">
@@ -136,6 +136,9 @@ defineExpose({ openSoundTab })
 
   .content {
     flex: 1;
+    min-width: 0;
+    min-height: 0;
+    box-sizing: border-box;
     height: 100%;
     overflow: auto;
     padding: 0 1.6rem;
@@ -144,5 +147,13 @@ defineExpose({ openSoundTab })
       border-bottom: 1px solid #c4c3c3;
     }
   }
+}
+@media (max-width: 800px) {
+  .setting { height: min(72dvh, 42rem); }
+  .settings-body { flex-direction: column; min-height: 0; }
+  .setting .left { flex-shrink: 0; border-right: 0; border-bottom: 1px solid var(--color-line); align-items: stretch; }
+  .setting .left .tabs { flex-direction: row; flex-wrap: wrap; padding: .5rem 0; gap: .4rem; }
+  .setting .left .tabs .tab { width: auto; font-size: .85rem; padding: .5rem; }
+  .setting .content { height: auto; padding: .75rem 0; }
 }
 </style>

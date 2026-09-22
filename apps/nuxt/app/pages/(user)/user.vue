@@ -4,7 +4,7 @@ import { useUserStore } from '@typewords/core/stores/user.ts'
 import { useRouter } from 'vue-router'
 import { BaseInput } from '@typewords/base'
 import { BaseButton, BaseIcon, BasePage, Form, type FormInstance, FormItem, Toast } from '@typewords/base'
-import { APP_NAME, EMAIL } from '@typewords/core/config/env.ts'
+import { APP_NAME, SUPPORT_URL } from '@typewords/core/config/env.ts'
 import { PASSWORD_CONFIG, PHONE_CONFIG } from '@typewords/core/config/auth.ts'
 import type { User } from '@typewords/core/apis/user.ts'
 import { changeEmailApi, changePhoneApi, setPassword, updateUserInfoApi } from '@typewords/core/apis/user.ts'
@@ -366,7 +366,7 @@ function onFileChange(e) {
           <div class="flex justify-between items-end mb-2">
             <span
               class="link text-sm cp"
-              @click="MessageBox.notice(`请提供证明信息发送邮件到 ${EMAIL} 进行申诉`, '人工申诉')"
+              @click="MessageBox.notice(`请通过本项目反馈入口联系维护者：${SUPPORT_URL}。不要公开密码或个人证明材料。`, '联系维护者')"
               v-if="userStore.user?.phone"
               >原手机号不可用，点此申诉</span
             >

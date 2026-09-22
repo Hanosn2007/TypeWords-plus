@@ -1,33 +1,28 @@
 <script setup lang="ts">
-import { useSettingStore } from '../stores/setting.ts'
 import { useRouter } from 'vue-router'
-import { IS_DEV } from '../config/env'
-import { withAppBaseURL } from '../utils/base-url'
+import { APP_NAME } from '../config/env'
 
-const settingStore = useSettingStore()
 const router = useRouter()
-const darkLogoSrc = withAppBaseURL('/imgs/logo/logo-text-black.png')
-const lightLogoSrc = withAppBaseURL('/imgs/logo/logo-text-white.png')
 
 function goHome() {
-  if (IS_DEV) {
-    router.push('/')
-  } else {
-    location.href = window.atob('aHR0cHM6Ly90eXBld29yZHMuY2M=')
-  }
+  router.push('/words')
 }
 </script>
 
 <template>
-  <div class="center mb-2" @click="goHome">
-    <img v-show="settingStore.theme === 'dark'" :src="lightLogoSrc" alt="" />
-    <img v-show="settingStore.theme !== 'dark'" :src="darkLogoSrc" alt="" />
-  </div>
+  <button class="project-logo mb-2" @click="goHome" aria-label="TypeWords Plus 单词首页">{{ APP_NAME }}</button>
 </template>
 
 <style scoped lang="scss">
-img {
+.project-logo {
   cursor: pointer;
-  height: 2rem;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font-size: 1.1rem;
+  font-weight: 650;
+  text-align: left;
+  padding: .4rem 0;
+  max-width: 100%;
 }
 </style>

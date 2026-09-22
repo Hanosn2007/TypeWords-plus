@@ -96,7 +96,11 @@ watch(
   flex-direction: column;
   align-items: center;
   padding: 1.8rem;
-  width: 30rem;
+  width: min(30rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  box-sizing: border-box;
+  overflow: auto;
+  overflow-wrap: anywhere;
   gap: 1rem;
   line-height: 1.5;
 
@@ -120,6 +124,8 @@ watch(
 
     .href-wrapper {
       display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
       font-size: 1rem;
       align-items: center;
       gap: 0.6rem;
@@ -165,5 +171,8 @@ watch(
     align-items: center;
     gap: 0.6rem;
   }
+}
+@media (max-width: 768px) {
+  .CollectNotice { top: 6rem; max-height: calc(100dvh - 7rem); }
 }
 </style>

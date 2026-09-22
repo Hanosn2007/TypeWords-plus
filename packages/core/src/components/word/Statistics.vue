@@ -201,7 +201,7 @@ const encouragementText = $computed(() => {
             <ChannelIcons />
           </div>
           <!-- Action Buttons -->
-          <div class="flex min-w-130 justify-center">
+          <div class="flex flex-wrap min-w-0 justify-center gap-2">
             <BaseButton
               :keyboard="settingStore.shortcutKeyMap[ShortcutKey.RepeatChapter]"
               @click="options(EventKey.repeatStudy)"

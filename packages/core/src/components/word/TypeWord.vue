@@ -1390,6 +1390,7 @@ defineExpose({
 }
 
 .whole-input {
+  box-sizing: border-box;
   width: 100%;
   min-height: 1.35em;
   padding: 0.15em 0.25em;
@@ -1425,6 +1426,8 @@ defineExpose({
   }
 
   .word {
+    max-width: 100%;
+    overflow-wrap: anywhere;
     font-size: 3rem;
     line-height: 1;
     font-family: var(--en-article-family);
@@ -1490,6 +1493,7 @@ defineExpose({
     box-shadow: inset 0 0 0 1px rgba(124, 58, 237, 0.25);
   }
 }
+.whole-input-wrap, .dictation { max-width: 100%; box-sizing: border-box; }
 
 // 移动端适配
 @media (max-width: 768px) {

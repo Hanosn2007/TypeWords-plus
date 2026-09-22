@@ -14,7 +14,6 @@ import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 import { useInit } from '@typewords/core/composables/useInit.ts'
 import { useI18n } from 'vue-i18n'
 import { Supabase } from '@typewords/core/utils/supabase.ts'
-import MiniProgram from '@/components/MiniProgram.vue'
 import WordCollectPopover from '@typewords/core/components/word/WordCollectPopover.vue'
 
 const router = useRouter()
@@ -151,7 +150,7 @@ onMounted(() => {
 
     <IeDialog />
 
-    <div class="flex-1 z-1 relative main-content overflow-x-hidden">
+    <div class="flex-1 z-1 relative main-content">
       <div
         class="mt-3 center relative z-9999 pointer-events-none"
         @click="router.push('/setting?index=6 ')"
@@ -168,8 +167,7 @@ onMounted(() => {
       <!--      <slot></slot>-->
       <router-view></router-view>
 
-      <div class="absolute right-4 top-4 flex z-1 gap-2" v-if="showIcon">
-        <MiniProgram v-if="settingStore.load && !settingStore.first" />
+      <div class="page-tools absolute right-4 top-4 flex z-1 gap-2" v-if="showIcon">
 
         <div class="relative group">
           <BaseIcon>
@@ -208,6 +206,8 @@ onMounted(() => {
 }
 
 .aside {
+  flex-shrink: 0;
+  overflow-y: auto;
   background: var(--color-second);
   height: 100vh;
   padding: 1rem 1rem;
@@ -337,14 +337,18 @@ onMounted(() => {
 }
 
 .main-content {
+  min-width: 0;
+  width: 0;
   // 移动端时为主内容区域添加顶部内边距，避免被顶部菜单遮挡
   @media (max-width: 768px) {
-    padding-top: 4rem;
+    padding-top: 6rem;
   }
 }
 
 // 移动端隐藏左侧菜单栏
 @media (max-width: 768px) {
+  .page-tools { position: relative; order: -1; top: auto; right: auto; justify-content: flex-end; padding: .5rem; }
+  .main-content { display: flex; flex-direction: column; }
   .aside {
     display: none;
   }

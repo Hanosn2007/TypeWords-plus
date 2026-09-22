@@ -32,6 +32,7 @@ defineProps<{
 
 .setting-item__main {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 2rem;
   width: 100%;
@@ -58,6 +59,7 @@ defineProps<{
 }
 
 .setting-item__control {
+  min-width: 0;
   flex: 1;
   display: flex;
   justify-content: flex-end;

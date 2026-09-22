@@ -249,6 +249,9 @@ $time: 0.3s;
   }
 
   .modal {
+    max-width: calc(100vw - 1.5rem);
+    max-height: calc(100dvh - 1.5rem);
+    min-width: 0;
     @apply relative overflow-hidden flex flex-col transition-all duration-300;
     background: var(--color-card-bg);
 
@@ -257,6 +260,8 @@ $time: 0.3s;
     }
 
     .modal-header {
+      flex-shrink: 0;
+      padding-right: 3.5rem;
       @apply flex justify-between items-center p-5 pb-0 rounded-t-lg;
 
       .title {
@@ -266,6 +271,11 @@ $time: 0.3s;
 
     .modal-body {
       @apply box-border text-main-text font-normal text-base leading-6 w-full flex-1 overflow-hidden flex;
+      min-height: 0;
+      min-width: 0;
+      overflow: auto;
+      overflow-wrap: anywhere;
+      :deep(> *) { max-width: 100%; min-width: 0; box-sizing: border-box; }
 
       &.padding {
         @apply p-1 px-5;
@@ -278,7 +288,11 @@ $time: 0.3s;
 
     .modal-footer {
       @apply flex justify-between p-5;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+      gap: .75rem;
     }
   }
+  .modal.full { max-width: 100%; max-height: 100dvh; }
 }
 </style>

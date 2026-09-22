@@ -186,6 +186,26 @@ html.dark {
   }
 }
 
+// Size against the space remaining beside navigation, including browser zoom.
+:root {
+  --layout-aside-width: var(--aside-width);
+  --content-width: calc(100vw - var(--layout-aside-width) - 2rem);
+  --toolbar-width: min(50rem, var(--content-width));
+  --article-width: min(56rem, var(--content-width));
+  --article-toolbar-width: var(--article-width);
+  --panel-width: min(24rem, calc(100vw - 2rem));
+  --article-panel-width: min(20rem, calc(100vw - 2rem));
+}
+@media (min-width: 1600px) {
+  :root {
+    --panel-width: min(24rem, calc((100vw - var(--layout-aside-width) - var(--toolbar-width)) / 2 - 2rem));
+    --article-panel-width: min(20rem, calc((100vw - var(--layout-aside-width) - var(--article-width)) / 2 - 2rem));
+  }
+}
+@media (max-width: 768px) {
+  :root { --layout-aside-width: 0px; }
+}
+
 .anim {
   transition: background var(--anim-time),
   color var(--anim-time),

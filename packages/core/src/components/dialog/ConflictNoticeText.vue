@@ -1,62 +1,17 @@
 <script setup lang="ts">
-import { jump2Feedback } from '../../utils'
-import WeChat from '../channel-icons/WeChat.vue'
-
-withDefaults(
-  defineProps<{
-    type?: 'all' | 'del' | 'keyboard'
-  }>(),
-  {
-    type: 'all',
-  }
-)
+withDefaults(defineProps<{ type?: 'all' | 'del' | 'keyboard' }>(), { type: 'all' })
 </script>
-
 <template>
-  <div class="text">
-    <div class="title" v-if="type === 'all'">{{ $t('conflict_notice_title') }}</div>
-    <ul>
-      <li v-if="type === 'all' || type === 'keyboard'">
-        <div class="title" v-if="type === 'all'">{{ $t('keyboard_no_response') }}</div>
-        <div>
-          <div class="text">
-            {{ $t('check_plugins_installed') }}
-            <span class="text-xl font-bold text-red-500">{{ $t('conflict_plugin_names') }}</span>
-            {{ $t('plugins_intercept_keyboard') }}<span class="font-bold text-red">{{ $t('cause_no_response') }}</span
-            >{{ $t('follow_steps_to_resolve') }}
-          </div>
-          <ul class="m-0">
-            <li>{{ $t('try_incognito_mode') }}</li>
-            <li>
-              {{ $t('incognito_not_working')
-              }}<span class="color-link mx-1 cp" @click="jump2Feedback">{{ $t('click_here') }}</span
-              >{{ $t('feedback_or_wechat') }}<WeChat />
-            </li>
-            <li>{{ $t('incognito_working') }}</li>
-            <li>{{ $t('disable_plugin_or_exclude') }}</li>
-            <li>
-              {{ $t('install_extension_manager') }}
-              <a
-                href="https://chromewebstore.google.com/detail/one-click-extensions-mana/pbgjpgbpljobkekbhnnmlikbbfhbhmem"
-                target="_blank"
-                >{{ $t('chrome_extension') }}</a
-              >,
-              <a
-                href="https://microsoftedge.microsoft.com/addons/detail/%E5%BF%AB%E6%8D%B7%E6%89%A9%E5%B1%95%E7%AE%A1%E7%90%86/jdodenbllldnoogfmbmmgpieafbnaogm"
-                target="_blank"
-                >{{ $t('edge_extension') }}</a
-              >, {{ $t('to_manage_extensions') }}
-            </li>
-          </ul>
-        </div>
-      </li>
-      <li v-if="type === 'all' || type === 'del'">
-        <div class="title" v-if="type === 'all'">{{ $t('delete_key_goes_back') }}</div>
-        <div>{{ $t('browser_360_shortcut') }}</div>
-        <div>{{ $t('change_browser_or_shortcut') }}</div>
-      </li>
-    </ul>
+  <div class="input-help">
+    <template v-if="type === 'all' || type === 'keyboard'">
+      <p>先关闭弹窗，点击练习区，并确认输入法处于英文状态。若页面提示另一个标签页正在学习，请只保留一个可写的学习页面。</p>
+      <p>浏览器或扩展可能抢占快捷键。可在本站设置中更改快捷键，或暂时停用有冲突的扩展后重试。请保留已保存的数据，不要清除网站存储。</p>
+      <p>若仍无法输入，请到<RouterLink to="/feedback">本项目反馈</RouterLink>说明浏览器、输入法和发生问题的步骤。</p>
+    </template>
+    <template v-if="type === 'all' || type === 'del'">
+      <p>练习区获得焦点后，删除键用于修改输入。若它触发浏览器后退，请检查浏览器或扩展的 Backspace 导航快捷键，并关闭有冲突的映射。</p>
+      <p>这仍会受到浏览器和扩展设置影响；如果本站练习区已聚焦却仍异常，请反馈具体操作。</p>
+    </template>
   </div>
 </template>
-
-<style scoped lang="scss"></style>
+<style scoped>.input-help { line-height: 1.8; overflow-wrap: anywhere; } p + p { margin-top: .75rem; }</style>

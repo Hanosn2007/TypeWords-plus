@@ -47,6 +47,6 @@ function status(word: string) {
 <style scoped>
 .unit-browse-button,button,select,input{padding:.5rem .8rem;border:1px solid var(--color-line,#777);border-radius:.4rem;color:inherit;background:var(--bg-card-secend,#303236)}
 .unit-browser-backdrop{position:fixed;inset:0;background:#0008;z-index:9500;display:grid;place-items:center;padding:1rem}
-.unit-browser{background:var(--bg-card,#27292c);color:var(--color-font,#ddd);width:min(48rem,100%);max-height:88vh;display:flex;flex-direction:column;padding:1.3rem;gap:1rem}
+.unit-browser{background:var(--color-card-bg,#27292c);color:var(--color-main-text,#ddd);width:min(48rem,100%);max-height:88dvh;min-width:0;box-sizing:border-box;display:flex;flex-direction:column;padding:1.3rem;gap:1rem;overflow-wrap:anywhere}.controls>*{max-width:100%;min-width:0;box-sizing:border-box}
 header,.controls,footer{display:flex;gap:.8rem;align-items:center;flex-wrap:wrap}header{justify-content:space-between}h2{font-size:1.15rem}.word-rows{overflow:auto;min-height:0}.word-rows article{border-bottom:1px solid var(--color-line,#555);padding:.8rem 0}.word-rows small{margin-left:1rem;opacity:.65}.word-rows p{margin-top:.35rem;line-height:1.6}footer{justify-content:center}button:disabled{opacity:.4}
 </style>

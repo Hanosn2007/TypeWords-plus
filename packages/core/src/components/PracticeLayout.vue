@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { useSettingStore } from '../stores/setting'
+import { ref } from 'vue'
+import { useElementSize } from '@vueuse/core'
 
 const settingStore = useSettingStore()
+const footerRef = ref<HTMLElement | null>(null)
+const { height: footerHeight } = useElementSize(footerRef)
 defineProps<{
   panelLeft: string
 }>()
 </script>
 
 <template>
-  <div class="flex justify-center relative" :class="!settingStore.showToolbar && 'footer-hide'">
+  <div class="practice-layout flex justify-center relative" :class="!settingStore.showToolbar && 'footer-hide'">
     <div class="wrap" id="PracticeArea">
       <slot name="practice"></slot>
     </div>
@@ -20,14 +24,17 @@ defineProps<{
     >
       <slot name="panel"></slot>
     </div>
-    <div class="footer-wrap">
+    <div class="footer-wrap" ref="footerRef" :style="{ '--footer-height': footerHeight + 'px' }">
       <slot name="footer"></slot>
     </div>
   </div>
 </template>
 
 <style scoped lang="scss">
+.practice-layout { min-width: 0; width: 100%; }
 .wrap {
+  max-width: 100%;
+  min-width: 0;
   transition: all var(--anim-time);
 }
 
@@ -38,6 +45,7 @@ defineProps<{
 }
 
 .footer-wrap {
+  max-width: calc(100vw - var(--layout-aside-width, 0px) - 2rem);
   position: fixed;
   bottom: calc(env(safe-area-inset-bottom, 0px));
   transition: all var(--anim-time);
@@ -51,14 +59,14 @@ defineProps<{
   height: calc(100vh - 1.8rem);
 }
 
-@media (max-width: 1439px) {
+@media (max-width: 1599px) {
   .panel-wrap {
     position: fixed;
     top: 0;
     left: 0 !important;
     right: 0 !important;
     bottom: 0;
-    height: 100vh;
+    height: 100dvh;
     z-index: 1000;
     display: flex;
     align-items: center;
@@ -81,7 +89,7 @@ defineProps<{
 @media (max-width: 768px) {
   .wrap {
     height: calc(100vh - 6rem);
-    width: 100vw;
+    width: 100%;
     padding: 0 1rem;
     box-sizing: border-box;
   }
@@ -103,6 +111,9 @@ defineProps<{
     width: auto;
   }
 }
+
+// A wrapped toolbar can be taller than the old fixed six-rem offset.
+.footer-hide .footer-wrap { bottom: calc(-1 * var(--footer-height, 6rem)); }
 
 // 超小屏幕适配
 @media (max-width: 480px) {
