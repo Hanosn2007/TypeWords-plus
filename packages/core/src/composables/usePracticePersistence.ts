@@ -29,62 +29,10 @@ import {
 import { useDataSyncPersistence } from './useDataSyncPersistence'
 import { getPracticeTimeDays, stripPracticeTimeAccounting } from '../utils/practiceTime'
 import { loadLibraryBook } from '../utils/libraryBooks'
+import { registerSaveBarrier, scheduleSafeSync } from '../utils/safeSync'
 
-type PendingWordSync = {
-  data: PracticeWordCacheBundle | null
-  updatedAt: string
-  push: (data: PracticeWordCacheBundle | null, updatedAt: string, keepalive?: boolean) => Promise<boolean>
-}
-
-const WORD_SYNC_DELAY = 1000
-const WORD_SYNC_RETRY_DELAY = 10_000
-let pendingWordSync: PendingWordSync | null = null
-let wordSyncTimer: ReturnType<typeof setTimeout> | null = null
-let wordSyncRunning = false
 let wordLocalWriteQueue: Promise<void> = Promise.resolve()
-
-function scheduleWordSyncTimer(delay: number) {
-  if (wordSyncTimer) return
-  wordSyncTimer = setTimeout(() => {
-    wordSyncTimer = null
-    void flushWordRemoteSync()
-  }, delay)
-}
-
-function scheduleWordRemoteSync(sync: PendingWordSync) {
-  pendingWordSync = sync
-  scheduleWordSyncTimer(WORD_SYNC_DELAY)
-}
-
-async function waitForRunningWordSync() {
-  while (wordSyncRunning) {
-    await new Promise(resolve => setTimeout(resolve, 20))
-  }
-}
-
-async function flushWordRemoteSync(keepalive: boolean = false) {
-  if (wordSyncRunning || !pendingWordSync) return
-  if (wordSyncTimer) {
-    clearTimeout(wordSyncTimer)
-    wordSyncTimer = null
-  }
-  const current = pendingWordSync
-  pendingWordSync = null
-  wordSyncRunning = true
-  let retry = false
-  try {
-    const success = await current.push(current.data, current.updatedAt, keepalive)
-    if (!success && !pendingWordSync) {
-      pendingWordSync = current
-      retry = true
-    }
-  } finally {
-    wordSyncRunning = false
-    if (pendingWordSync) {
-      scheduleWordSyncTimer(retry && pendingWordSync === current ? WORD_SYNC_RETRY_DELAY : 0)
-    }
-  }
-}
+registerSaveBarrier(() => wordLocalWriteQueue)
 
 /**
  * 将进行中的练习统计（PracticeState）落库到 store.sdict.statistics。
@@ -264,15 +212,6 @@ export function usePracticeWordPersistence(options?: { free?: () => boolean }) {
     return resolved ? String(resolved) : undefined
   }
 
-  function latestTimestamp(...values: Array<string | undefined>): string {
-    return (
-      values.reduce<string | undefined>((latest, value) => {
-        if (!value || Number.isNaN(Date.parse(value))) return latest
-        if (!latest || Date.parse(value) > Date.parse(latest)) return value
-        return latest
-      }, undefined) ?? new Date().toISOString()
-    )
-  }
 
   async function migrateUnscopedLocalLegacyCache(dictId?: string): Promise<void> {
     if (!dictId) return
@@ -294,67 +233,6 @@ export function usePracticeWordPersistence(options?: { free?: () => boolean }) {
     await wordLocalWriteQueue
   }
 
-  async function mergeWordBundleForRemotePush(
-    snapshot: PracticeWordCacheBundle,
-    updatedAt: string,
-    remoteData: unknown,
-    remoteUpdatedAt?: string
-  ): Promise<PracticeWordCacheBundle | null> {
-    let result: PracticeWordCacheBundle | null = null
-    // Remote I/O happens before this callback. Queue the fresh local read and
-    // IDB write with normal saves so a save that completed during that I/O is
-    // always part of the merge and cannot be overwritten by an old snapshot.
-    wordLocalWriteQueue = wordLocalWriteQueue
-      .catch(error => console.warn('上一次单词练习本地保存失败', error))
-      .then(async () => {
-        const local = await getPracticeWordCacheLocalWithMeta()
-        const merged = mergePracticeWordCacheBundles(local?.val, snapshot, local?.updated_at, updatedAt)
-        result = mergePracticeWordCacheBundles(
-          merged,
-          remoteData as PracticeWordCachePayload | undefined,
-          updatedAt,
-          remoteUpdatedAt
-        )
-        if (result) {
-          await dataSync.saveLocalOnly(
-            SyncDataType.practice_word,
-            result,
-            latestTimestamp(local?.updated_at, updatedAt, remoteUpdatedAt)
-          )
-        }
-      })
-    await wordLocalWriteQueue
-    return result
-  }
-
-  async function mergeWordBundleFromRemotePull(
-    remoteData: unknown,
-    remoteUpdatedAt?: string
-  ): Promise<PracticeWordCacheBundle | null> {
-    let result: PracticeWordCacheBundle | null = null
-    // Queue the read and write with ordinary saves. Without this, a visibility
-    // pull can read an old local bundle and overwrite a just-completed save.
-    wordLocalWriteQueue = wordLocalWriteQueue
-      .catch(error => console.warn('上一次单词练习本地保存失败', error))
-      .then(async () => {
-        const local = await getPracticeWordCacheLocalWithMeta()
-        result = mergePracticeWordCacheBundles(
-          local?.val,
-          remoteData as PracticeWordCachePayload,
-          local?.updated_at,
-          remoteUpdatedAt
-        )
-        if (result) {
-          await dataSync.saveLocalOnly(
-            SyncDataType.practice_word,
-            result,
-            latestTimestamp(local?.updated_at, remoteUpdatedAt)
-          )
-        }
-      })
-    await wordLocalWriteQueue
-    return result
-  }
 
   async function loadLocal(dictId?: string): Promise<PracticeWordCache | null> {
     await wordLocalWriteQueue
@@ -371,15 +249,7 @@ export function usePracticeWordPersistence(options?: { free?: () => boolean }) {
   }
 
   async function fetch(dictId?: string): Promise<PracticeWordCache | null> {
-    const resolvedDictId = resolveDictId(dictId)
-    const remote = await dataSync.pullIfRemoteNewer(
-      SyncDataType.practice_word,
-      undefined,
-      mergeWordBundleFromRemotePull
-    )
-    if (remote) {
-      return restorePracticeWordCache(scopedCache(remote.data, resolvedDictId))
-    }
+    // Whole-snapshot synchronization is coordinated separately.
     return null
   }
 
@@ -411,20 +281,7 @@ export function usePracticeWordPersistence(options?: { free?: () => boolean }) {
         const bundle = upgradePracticeScopes(await getPracticeWordCacheBundleLocal())
         bundle.entries[cacheScopeKey(compactData, dictId)] = { data: compactData, updatedAt }
         await dataSync.saveLocalOnly(SyncDataType.practice_word, bundle, updatedAt)
-        scheduleWordRemoteSync({
-          data: bundle,
-          updatedAt,
-          push: (snapshot, timestamp, keepalive) =>
-            dataSync.pushSnapshotToRemote(
-              SyncDataType.practice_word,
-              snapshot,
-              timestamp,
-              undefined,
-              keepalive,
-              (remoteData, remoteUpdatedAt) =>
-                mergeWordBundleForRemotePush(snapshot, timestamp, remoteData, remoteUpdatedAt)
-            ),
-        })
+        scheduleSafeSync()
       })
     await wordLocalWriteQueue
   }
@@ -444,28 +301,14 @@ export function usePracticeWordPersistence(options?: { free?: () => boolean }) {
         const bundle = upgradePracticeScopes(await getPracticeWordCacheBundleLocal())
         bundle.entries[clearingKey] = { data: null, updatedAt }
         await dataSync.saveLocalOnly(SyncDataType.practice_word, bundle, updatedAt)
-        scheduleWordRemoteSync({
-          data: bundle,
-          updatedAt,
-          push: (snapshot, timestamp, keepalive) =>
-            dataSync.pushSnapshotToRemote(
-              SyncDataType.practice_word,
-              snapshot,
-              timestamp,
-              undefined,
-              keepalive,
-              (remoteData, remoteUpdatedAt) =>
-                mergeWordBundleForRemotePush(snapshot, timestamp, remoteData, remoteUpdatedAt)
-            ),
-        })
+        scheduleSafeSync()
       })
     await wordLocalWriteQueue
   }
 
   async function flushRemote(keepalive: boolean = false) {
     await wordLocalWriteQueue
-    await waitForRunningWordSync()
-    await flushWordRemoteSync(keepalive)
+    scheduleSafeSync()
   }
 
   return {
@@ -494,11 +337,6 @@ export function usePracticeArticlePersistence() {
   }
 
   async function fetch(): Promise<PracticeArticleCache | null> {
-    const remote = await dataSync.pullIfRemoteNewer(SyncDataType.practice_article)
-    if (remote) {
-      const remoteData = remote?.data as PracticeArticleCache
-      return remoteData
-    }
     return null
   }
 

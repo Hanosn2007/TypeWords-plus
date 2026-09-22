@@ -164,7 +164,7 @@ export default defineNuxtConfig({
                 name: '数据存储在哪里？',
                 acceptedAnswer: {
                   '@type': 'Answer',
-                  text: '所有数据优先保存在本地浏览器（IndexedDB / localStorage），完全离线可用。如需跨设备同步，可在设置中配置自己的 Supabase 实例，实现双向云端同步。',
+                  text: '学习数据优先保存在本机浏览器。在账号与数据页登录本站账号后，可跨设备同步；版本冲突由用户比较选择。本机历史和完整数据导入导出无需登录。离线使用需要页面和词书资源已加载。',
                 },
               },
               {

@@ -1,5 +1,6 @@
 import { shallowRef } from 'vue'
-import { get, setMany } from 'idb-keyval'
+import { get } from 'idb-keyval'
+import { atomicSetMany as setMany } from '../utils/atomicStorage'
 import { PRACTICE_WORD_CACHE, upgradePracticeScopes } from '../utils/cache'
 import { SAVE_DICT_KEY, SAVE_SETTING_KEY } from '../config/env'
 

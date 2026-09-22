@@ -4,7 +4,6 @@ import BaseTable from "../../components/BaseTable.vue";
 import WordItem from "./WordItem.vue";
 import { defineAsyncComponent } from "vue";
 import { useRuntimeStore } from "../../stores/runtime.ts";
-import { AppEnv } from "../../config/env.ts";
 
 const Dialog = defineAsyncComponent(() => import('@typewords/base/Dialog'))
 
@@ -12,9 +11,7 @@ const model = defineModel()
 const runtimeStore = useRuntimeStore()
 
 async function requestList({pageNo, pageSize, searchKey}) {
-  if (AppEnv.CAN_REQUEST) {
-
-  } else {
+  {
     let list = runtimeStore.editDict.words
     let total = list.length
     list = list.slice((pageNo - 1) * pageSize, (pageNo - 1) * pageSize + pageSize)

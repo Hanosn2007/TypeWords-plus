@@ -18,6 +18,7 @@ export function normalizeSyncRows(rows: SafeRow[]): SafeRow[] {
     if ((type === 'dict' || type === 'setting') && data) {
       delete data.load
       delete data._ignoreWatch
+      delete data.__updateLocalData
     }
     return { type, data, data_version: row.data_version }
   })
@@ -33,7 +34,7 @@ export async function rowsSignatureAsync(rows: SafeRow[], yieldTask: () => Promi
     const row = rows.find(r => r.type === type)
     let data = row?.data ?? null
     if ((type === 'dict' || type === 'setting') && data && typeof data === 'object') {
-      data = { ...data }; delete data.load; delete data._ignoreWatch
+      data = { ...data }; delete data.load; delete data._ignoreWatch; delete data.__updateLocalData
     }
     return { type, data, data_version: row ? row.data_version : (type === 'dict' ? 4 : type === 'setting' ? 25 : 1) }
   })

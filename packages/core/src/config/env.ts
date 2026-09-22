@@ -29,25 +29,6 @@ const map = {
 
 export const ENV = Object.assign(map['DEV'], common)
 
-export let AppEnv = {
-  // TOKEN: localStorage.getItem('token') ?? '',
-  TOKEN: '',
-  IS_OFFICIAL: false,
-  IS_LOGIN: false,
-  CAN_REQUEST: false,
-}
-
-if (import.meta.client) {
-  AppEnv.TOKEN = localStorage.getItem('token') ?? ''
-  // AppEnv.IS_OFFICIAL = IS_DEV || [Host,Old_Host].includes(window.location.host)
-}
-
-AppEnv.IS_LOGIN = !!AppEnv.TOKEN
-AppEnv.CAN_REQUEST = AppEnv.IS_LOGIN && AppEnv.IS_OFFICIAL
-// AppEnv.IS_OFFICIAL = true
-// AppEnv.CAN_REQUEST = true
-// console.log('AppEnv.CAN_REQUEST',AppEnv.CAN_REQUEST)
-
 export const RESOURCE_PATH = ENV.API + 'static'
 
 export const DICT_LIST = {
@@ -70,7 +51,7 @@ export const SoundFileOptions = [
 ]
 export const APP_VERSION = {
   key: 'type-words-app-version',
-  version: 3,
+  version: 4,
 }
 export const SAVE_DICT_KEY = {
   key: 'typing-word-dict',

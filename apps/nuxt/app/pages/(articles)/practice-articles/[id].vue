@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { addStat, setUserDictProp } from '@typewords/core/apis'
 import { BaseIcon, Toast, Tooltip } from '@typewords/base'
 import ConflictNotice from '@typewords/core/components/dialog/ConflictNotice.vue'
 import ArticleList from '@typewords/core/components/list/ArticleList.vue'
 import Panel from '@typewords/core/components/Panel.vue'
 import PracticeLayout from '@typewords/core/components/PracticeLayout.vue'
 import SettingDialog from '@typewords/core/components/setting/SettingDialog.vue'
-import { AppEnv, DICT_LIST } from '@typewords/core/config/env.ts'
+import { DICT_LIST } from '@typewords/core/config/env.ts'
 import { genArticleSectionData, usePlayArticleTextAudio, usePlaySentenceAudio } from '@typewords/core/hooks/article.ts'
 import { useArticleOptions } from '@typewords/core/hooks/dict.ts'
 import { useOnKeyboardEventListener, useStartKeyboardEventListener } from '@typewords/core/hooks/event.ts'
@@ -294,16 +293,6 @@ async function complete() {
   if (store.sbook.lastLearnIndex >= store.sbook.length - 1) {
     store.sdict.complete = true
   }
-  if (AppEnv.CAN_REQUEST) {
-    let res = await addStat({
-      ...data,
-      type: 'article',
-      complete: store.sdict.complete,
-    })
-    if (!res.success) {
-      Toast.error(res.msg)
-    }
-  }
 
   store.sbook.statistics.push(data as any)
 
@@ -376,12 +365,6 @@ async function changeArticle(val: ArticleItem) {
     store.sbook.lastLearnIndex = rIndex
     getCurrentPractice()
 
-    if (AppEnv.CAN_REQUEST) {
-      let res = await setUserDictProp(null, store.sbook)
-      if (!res.success) {
-        Toast.error(res.msg)
-      }
-    }
   }
   initAudio()
   lock = false

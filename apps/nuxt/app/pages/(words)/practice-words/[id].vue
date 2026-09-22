@@ -36,7 +36,7 @@ import { getDefaultDict, getDefaultWord } from '@typewords/core/types/func.ts'
 import ConflictNotice from '@typewords/core/components/dialog/ConflictNotice.vue'
 import PracticeLayout from '@typewords/core/components/PracticeLayout.vue'
 import {
-  AppEnv,
+
   DICT_LIST,
   LIB_JS_URL,
   TourConfig,
@@ -44,7 +44,6 @@ import {
   WordPracticeStageNameMap,
 } from '@typewords/core/config/env.ts'
 import { watchOnce } from '@vueuse/core'
-import { addStat, setUserDictProp } from '@typewords/core/apis'
 import GroupList from '@typewords/core/components/word/GroupList.vue'
 import { useDataSyncPersistence } from '@typewords/core/composables/useDataSyncPersistence.ts'
 import { bookPracticeSettingsKey } from '@typewords/core/composables/bookPracticeSettings.ts'
@@ -871,18 +870,6 @@ async function complete() {
       }
     }
 
-    if (AppEnv.CAN_REQUEST) {
-      let res = await addStat({
-        ...data,
-        type: 'word',
-        perDayStudyNumber: store.sdict.perDayStudyNumber,
-        lastLearnIndex: store.sdict.lastLearnIndex,
-        complete: store.sdict.complete,
-      })
-      if (!res.success) {
-        Toast.error(res.msg)
-      }
-    }
 
     // Persist this marker in the same dictionary snapshot as statistics/progress.
     // A refresh during remote sync must not restore the already-settled local cache.
@@ -1320,12 +1307,6 @@ async function continueStudy() {
   emitter.emit(EventKey.resetWord)
   initData(temp)
 
-  if (AppEnv.CAN_REQUEST) {
-    let res = await setUserDictProp(null, { ...store.sdict, type: 'word' })
-    if (!res.success) {
-      Toast.error(res.msg)
-    }
-  }
 }
 
 async function jumpToGroup(group: number) {
@@ -1340,12 +1321,6 @@ async function jumpToGroup(group: number) {
   store.sdict.lastLearnIndex = (group - 1) * store.sdict.perDayStudyNumber
   emitter.emit(EventKey.resetWord)
   initData(getCurrentStudyWord())
-  if (AppEnv.CAN_REQUEST) {
-    let res = await setUserDictProp(null, { ...store.sdict, type: 'word' })
-    if (!res.success) {
-      Toast.error(res.msg)
-    }
-  }
 }
 
 function randomWrite() {

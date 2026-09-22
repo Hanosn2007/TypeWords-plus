@@ -27,7 +27,7 @@ import dayjs from 'dayjs'
 import duration from 'dayjs/plugin/duration'
 import {
   APP_VERSION,
-  AppEnv,
+
   BACKUP_INDEX_KEY,
   DefaultShortcutKeyMap,
   DictId,
@@ -39,7 +39,6 @@ import { nextTick, toRaw } from 'vue'
 import { Toast } from '@typewords/base'
 import { get } from 'idb-keyval'
 import { nanoid } from 'nanoid'
-import { saveHashSnapshot } from '../composables/useDataSyncPersistence'
 import { withAppBaseURL } from './base-url'
 import { normalizeBookLearning, normalizeBookUnits } from './bookLearning'
 import { loadLibraryBook } from './libraryBooks'
@@ -88,7 +87,7 @@ function normalizeStoredDict(val: any): Dict {
   return getDefaultDict(checkRiskKey(getDefaultDict(), next))
 }
 
-export async function checkAndUpgradeSaveDict(val: any) {
+export async function checkAndUpgradeSaveDict(val: any, strict = false) {
   // console.log(configStr)
   // console.log('s', new Blob([val]).size)
   // val = ''
@@ -102,18 +101,18 @@ export async function checkAndUpgradeSaveDict(val: any) {
         data = val
       }
       if (!data.version) {
-        let currentHash = '词典数据缺少版本号-自动备份'
+        if (strict) throw new Error('词典数据缺少版本号')
+        let currentHash = '词典数据缺少版本号'
         window?.umami?.track('error', currentHash)
         console.warn(currentHash)
-        await saveHashSnapshot(currentHash, '')
         return defaultState
       }
       let state: any = data.val
-      if (typeof state !== 'object') {
-        let currentHash1 = '词典数据格式无效-自动备份'
+      if (!state || typeof state !== 'object') {
+        if (strict) throw new Error('词典数据格式无效')
+        let currentHash1 = '词典数据格式无效'
         console.warn(currentHash1)
         window?.umami?.track('error', currentHash1)
-        await saveHashSnapshot(currentHash1, '')
         return defaultState
       }
       // The old global "known" list has no book identity. Keep it globally
@@ -144,18 +143,18 @@ export async function checkAndUpgradeSaveDict(val: any) {
           if (needsLegacyBookLearningMasteryMigration) defaultState.legacyBookLearningMasteryMigrationVersion = 0
           return defaultState
         } catch (upgradeError) {
-          let currentHash2 = '词典数据升级失败-自动备份'
+          if (strict) throw upgradeError
+          let currentHash2 = '词典数据升级失败'
           console.error(currentHash2, upgradeError)
           window?.umami?.track('error', currentHash2 + upgradeError)
-          await saveHashSnapshot(currentHash2, '')
           return defaultState
         }
       }
     } catch (e) {
-      let currentHash3 = '词典数据解析异常-自动备份'
+      if (strict) throw e
+      let currentHash3 = '词典数据解析异常'
       console.error(currentHash3, e)
       window?.umami?.track('error', currentHash3 + e)
-      await saveHashSnapshot(currentHash3, '')
       return defaultState
     }
   }
@@ -169,7 +168,7 @@ export async function parseJsonStr(val: any, cb: any): Promise<SaveData> {
   return result
 }
 
-export async function checkAndUpgradeSaveSetting(val: any) {
+export async function checkAndUpgradeSaveSetting(val: any, strict = false) {
   // console.log(configStr)
   // console.log('s', new Blob([val]).size)
   // val = ''
@@ -182,15 +181,15 @@ export async function checkAndUpgradeSaveSetting(val: any) {
       } else {
         data = val
       }
-      if (!data.version) return defaultState
+      if (!data.version) { if (strict) throw Error('设置缺少版本号'); return defaultState }
       let state: SettingState & { [key: string]: any } = data.val
-      if (typeof state !== 'object') return defaultState
+      if (!state || typeof state !== 'object') { if (strict) throw Error('设置格式无效'); return defaultState }
       state.load = false
       // debugger
       let version = Number(data.version)
       //为了保持永远是最新的快捷键选项列表，但保留住用户的自定义设置，去掉无效的快捷键选项
       //例: 2版本，可能有快捷键A。3版本没有了
-      checkRiskKey(defaultState.shortcutKeyMap, state.shortcutKeyMap)
+      checkRiskKey(defaultState.shortcutKeyMap, state.shortcutKeyMap ?? {})
 
       let updateLocalData = false
       //移除单独保存的 app version字段，转移到 settingStore的webAppVersion里面
@@ -202,7 +201,7 @@ export async function checkAndUpgradeSaveSetting(val: any) {
       //在这里读取之前的快照，如果存在则从里面读取setting的firstTime，
       //判断是否与当前值相等，不相等则取快照的值并将本地的update_at更新，以免被远程覆盖
       // 修复19版本未导入变量，导致抛错所有用户setting变默认值的bug
-      if (version === 19) {
+      if (version === 19 && !strict) {
         try {
           const snapshotCutoffTime = new Date('2026-03-20T22:25:00+08:00').getTime()
           const rawIndex = (await get(BACKUP_INDEX_KEY)) as Array<{ key?: string; createdAt?: number }> | null
@@ -277,9 +276,9 @@ export async function checkAndUpgradeSaveSetting(val: any) {
       ;(defaultState as any).__updateLocalData = updateLocalData
       return defaultState
     } catch (e) {
-      let currentHash = '设置数据解析异常-自动备份'
+      let currentHash = '设置数据解析异常'
+      if (strict) throw e
       window?.umami?.track('error', currentHash + e)
-      await saveHashSnapshot(currentHash, '')
       return defaultState
     }
   }
@@ -709,15 +708,6 @@ export function total(arr: any[], key: string) {
 }
 
 export function resourceWrap(resource: string, version?: number) {
-  if (AppEnv.IS_OFFICIAL) {
-    if (resource.includes('.json')) resource = resource.replace('.json', '')
-    if (!resource.includes('http')) resource = RESOURCE_PATH + resource
-    if (version === undefined) {
-      const store = useBaseStore()
-      return `${resource}_v${store.dictListVersion}.json`
-    }
-    return `${resource}_v${version}.json`
-  }
   return withAppBaseURL(resource)
 }
 

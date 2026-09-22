@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { BaseButton, BasePage, Textarea, Toast, UploadButton } from '@typewords/base'
-import { addDict } from '@typewords/core/apis'
 import { getWordList } from '@typewords/core/apis/words.ts'
-import { AppEnv, ENV, LIB_JS_URL } from '@typewords/core/config/env.ts'
+import { ENV, LIB_JS_URL } from '@typewords/core/config/env.ts'
 import { useBaseStore } from '@typewords/core/stores/base.ts'
 import { useRuntimeStore } from '@typewords/core/stores/runtime.ts'
 import { DictType } from '@typewords/core/types/enum.ts'
@@ -273,11 +272,7 @@ async function persistTarget() {
     type: isWord.value ? DictType.word : DictType.article,
   })
 
-  if (AppEnv.CAN_REQUEST) {
-    const res = await addDict(null, dict)
-    if (!res.success) throw new Error(res.msg || `${targetLabel.value}创建失败`)
-    dict = getDefaultDict({ ...res.data, custom: true, type: dict.type })
-  } else {
+  {
     dict.id = `custom-${importType.value}-${nanoid(8)}`
   }
 

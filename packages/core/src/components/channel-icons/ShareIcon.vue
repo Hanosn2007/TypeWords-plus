@@ -5,7 +5,6 @@ import { usePracticeStore } from '../../stores/practice.ts'
 import { useBaseStore } from '../../stores/base.ts'
 import { loadJsLib, msToHourMinute } from '../../utils'
 import dayjs from 'dayjs'
-import { useUserStore } from '../../stores/user.ts'
 import { defineAsyncComponent } from 'vue'
 import { withAppBaseURL } from '../../utils/base-url'
 
@@ -13,7 +12,6 @@ const Dialog = defineAsyncComponent(() => import('@typewords/base/Dialog'))
 
 const practiceStore = usePracticeStore()
 const baseStore = useBaseStore()
-const userStore = useUserStore()
 
 let showShareDialog = $ref(false)
 let loading1 = $ref(false)
@@ -130,13 +128,13 @@ const sentence = $computed(() => {
             <!-- 顶部用户信息 -->
             <div class="flex items-center">
               <div
-                v-if="userStore.user?.username"
+                v-if="'TypeWords Plus'"
                 class="w-12 h-12 bg-gray-600 rounded-full mr-3 flex items-center justify-center"
               >
                 <IconSimpleIconsGithub class="w-6 h-6 text-white" />
               </div>
               <div>
-                <div class="font-semibold text-lg">{{ userStore.user?.username }}</div>
+                <div class="font-semibold text-lg">{{ 'TypeWords Plus' }}</div>
                 <div class="">{{ dayjs().format('YYYY年MM月DD日') }}</div>
               </div>
               <div class="ml-auto text-xs">Type Words | 英语学习</div>

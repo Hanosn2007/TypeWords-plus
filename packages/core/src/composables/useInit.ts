@@ -1,9 +1,7 @@
-import { APP_VERSION, AppEnv } from '../config/env'
+import { APP_VERSION } from '../config/env'
 import { debounce } from '../utils'
-import { syncSetting } from '../apis'
-import { useBaseStore, useRuntimeStore, useSettingStore, useUserStore } from '../stores'
+import { useBaseStore, useRuntimeStore, useSettingStore } from '../stores'
 import type { BaseState, SettingState } from '../stores'
-import { Supabase } from '../utils/supabase'
 import { CloudSync } from '../utils/cloudSync'
 import { claimSyncWriter, suspendSafeSync, resumeSafeSync } from '../utils/safeSync'
 import { ensureStudyUpgrade } from './studyUpgrade'
@@ -13,6 +11,7 @@ import { SyncDataType } from '../types'
 import type { SubscriptionCallbackMutation } from 'pinia'
 import { onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { inspectStoredData, localDataError } from '../utils/localDataGuard'
 // import { startRrwebRecording } from './useRrweb'
 
 let unsub = null
@@ -23,7 +22,6 @@ export function useInit() {
   const settingStore = useSettingStore()
   const runtimeStore = useRuntimeStore()
   const route = useRoute()
-  // const userStore = useUserStore()
   const dataSync = useDataSyncPersistence()
   let initializing = false // 标记是否正在初始化
   let focus = true
@@ -94,9 +92,10 @@ export function useInit() {
     window.removeEventListener('pagehide', flushLocalBeforeLeaving)
 
     suspendSafeSync()
+    try { await inspectStoredData(); localDataError.value = '' }
+    catch (error) { localDataError.value = (error as Error).message; initializing = false; return }
     await ensureStudyUpgrade()
     await ensureHashGuardBeforeInit()
-    // await userStore.init()
     let dictData = await store.init()
     // Attribute an old unscoped practice cache only once, before navigation can
     // change the selected book. `store.init()` has restored that persisted book.
@@ -104,6 +103,7 @@ export function useInit() {
       await usePracticeWordPersistence().migrateUnscopedLocalLegacyCache(String(store.sdict.id))
     }
     let settingData = await settingStore.init()
+    await dataSync.primeLocalHistory().catch(console.warn)
     resumeSafeSync()
     if (dictData && settingData) {
       await dataSync.syncData({
@@ -159,15 +159,12 @@ export function useInit() {
         } finally {
           fetching2 = false
         }
-        if (AppEnv.CAN_REQUEST) {
-          syncSetting(null, settingStore.$state)
-        }
       }, 1000)
     )
 
     runtimeStore.isNew = APP_VERSION.version > Number(settingStore.webAppVersion)
     // runtimeStore.isNew = true
-    runtimeStore.isError = (CloudSync.check() ? CloudSync.getStatus() : Supabase.getStatus()).status === 'error'
+    runtimeStore.isError = CloudSync.getStatus().status === 'error'
     window.umami?.track('host', { host: window.location.host })
 
     // 静默后台录制用户操作，数据保存到 IndexedDB

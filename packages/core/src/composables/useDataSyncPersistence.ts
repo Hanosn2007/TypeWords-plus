@@ -1,844 +1,161 @@
-import {
-  _getDictDataByUrl,
-  checkAndUpgradeSaveDict,
-  checkAndUpgradeSaveSetting,
-  shakeCommonDict,
-  shouldFetchRemote,
-} from '../utils'
-import {
-  getPracticeArticleCacheLocal,
-  getPracticeArticleCacheLocalWithMeta,
-  getPracticeWordCacheBundleLocal,
-  getPracticeWordCacheLocalWithMeta,
-  PRACTICE_ARTICLE_CACHE,
-  PRACTICE_WORD_CACHE,
-  type PracticeArticleCache,
-  type PracticeWordCachePayload,
-  mergePracticeWordCacheBundles,
-  upgradePracticeScopes,
-  setPracticeArticleCacheLocal,
-  setPracticeWordCacheLocal,
-} from '../utils/cache'
-import {
-  APP_VERSION,
-  BACKUP_INDEX_KEY,
-  BACKUP_KEY,
-  DictId,
-  LOCAL_FILE_KEY,
-  SAVE_DICT_KEY,
-  SAVE_SETTING_KEY,
-  WEBSITE_VERSION_HASH,
-} from '../config/env'
+import { _getDictDataByUrl, checkAndUpgradeSaveDict, checkAndUpgradeSaveSetting, shakeCommonDict } from '../utils'
+import { getPracticeArticleCacheLocal, getPracticeWordCacheBundleLocal, upgradePracticeScopes, notifyPracticeWordCache } from '../utils/cache'
+import { SAVE_DICT_KEY, SAVE_SETTING_KEY, LOCAL_FILE_KEY, WEBSITE_VERSION_HASH } from '../config/env'
 import { type BaseState, getDefaultBaseState, getDefaultSettingState, useBaseStore, useSettingStore } from '../stores'
-import { CompareResult, DictType } from '../types'
-import type { BackupData, SaveData, Snapshot } from '../types'
-import { SyncDataType } from '../types/enum'
-import { Supabase } from '../utils/supabase'
-import { del, get, set, setMany } from 'idb-keyval'
-import type { SupabaseClient } from '@supabase/supabase-js'
-import { Toast } from '@typewords/base'
+import { DictType, SyncDataType } from '../types'
+import type { BackupData, SaveData } from '../types'
+import { get, getMany, set } from 'idb-keyval'
+import { atomicSetMany as setMany } from '../utils/atomicStorage'
 import { CloudSync } from '../utils/cloudSync'
-import { configureSafeSync, scheduleSafeSync, syncSafely, serializeSyncLocalWrite, replaceLocalSnapshot, suspendSafeSync } from '../utils/safeSync'
+import { configureSafeSync, scheduleSafeSync, syncSafely, serializeSyncLocalWrite, replaceLocalSnapshot, flushActiveEditors, LOCAL_REPLACEMENT_KEY } from '../utils/safeSync'
 import { rowsSignature, normalizeSyncRows, type SafeRow } from '../utils/syncPolicy'
+import { validateRows, validateAttachments, requiredAttachmentIDs, DATA_KEYS, DATA_VERSIONS, decodeArchive, type Attachment } from '../utils/dataArchive'
+import { configureLocalHistory, markHistoryDirty, checkpointLocalHistory, checkpointBeforeNewDate, primeLocalHistory, HISTORY_DIRTY_KEY } from '../utils/localHistory'
 import { toRaw } from 'vue'
 
-type RemoteMetaRow = {
-  type: SyncDataType
-  updated_at?: string
-  data_version?: number
-}
-
-type RemoteDataRow = RemoteMetaRow & {
-  data: any
-}
-
-type LocalPersistMeta = {
-  updated_at?: string
-  version?: number
-}
-
-type SaveLocalAndSyncOptions = {
-  client?: SupabaseClient | null
-  pullWhenRemoteNewer?: boolean
-  pushWhenLocalNewer?: boolean
-  canSyncRemote?: boolean
-}
-
-const DICT_SYNC_BLOCK_REASON = '检测到自定义文章里面有自定义音频，无法使用同步功能'
-
-const ALL_SYNC_TYPES: SyncDataType[] = [
-  SyncDataType.dict,
-  SyncDataType.setting,
-  SyncDataType.practice_word,
-  SyncDataType.practice_article,
-]
-
-function getDataVersion(type: SyncDataType): number {
-  switch (type) {
-    case SyncDataType.dict:
-      return SAVE_DICT_KEY.version
-    case SyncDataType.setting:
-      return SAVE_SETTING_KEY.version
-    case SyncDataType.practice_word:
-      return PRACTICE_WORD_CACHE.version
-    case SyncDataType.practice_article:
-      return PRACTICE_ARTICLE_CACHE.version
-  }
-}
-
-function getPersistKey(type: SyncDataType): string {
-  return type === SyncDataType.dict ? SAVE_DICT_KEY.key : SAVE_SETTING_KEY.key
-}
-
-function getSyncClient(client?: SupabaseClient | null): SupabaseClient | null {
-  if (client) return client
-  if (!Supabase.check()) return null
-  return Supabase.getInstance() as SupabaseClient
-}
-
-function setSyncStatus(status: 'idle' | 'syncing' | 'success' | 'error', message?: string) {
-  if (CloudSync.check()) {
-    CloudSync.setStatus(status, message)
-  } else {
-    Supabase.setStatus(status, message)
-  }
-}
-
-function getSyncStatus() {
-  return CloudSync.check() ? CloudSync.getStatus() : Supabase.getStatus()
-}
-
-async function getLocalPersistMeta(type: SyncDataType): Promise<LocalPersistMeta | null> {
-  if (type === SyncDataType.practice_word) {
-    return await getPracticeWordCacheLocalWithMeta()
-  }
-  if (type === SyncDataType.practice_article) {
-    return await getPracticeArticleCacheLocalWithMeta()
-  }
-  const raw = await get(getPersistKey(type))
-  try {
-    return JSON.parse(raw)
-  } catch {
-    return null
-  }
-}
-
-async function persistLocalState(type: SyncDataType, val: unknown, updated_at?: string): Promise<void> {
-  try {
-    await serializeSyncLocalWrite(() => persistLocalStateUnlocked(type, val, updated_at))
-  } catch (error) {
-    suspendSafeSync()
-    CloudSync.setStatus('error', '本机保存失败，请保持页面打开并导出数据：' + ((error as Error).message || String(error)))
-    throw error
-  }
-}
-
-async function persistLocalStateUnlocked(type: SyncDataType, val: unknown, updated_at?: string): Promise<void> {
-  // console.log('persistLocalState',type,updated_at)
-  if (type === SyncDataType.practice_word) {
-    await setPracticeWordCacheLocal(upgradePracticeScopes(val as PracticeWordCachePayload), updated_at)
-    return
-  }
-  if (type === SyncDataType.practice_article) {
-    await setPracticeArticleCacheLocal(val as PracticeArticleCache, updated_at)
-    return
-  }
-  await set(
-    getPersistKey(type),
-    JSON.stringify({
-      val,
-      version: getDataVersion(type),
-      updated_at,
-    })
-  )
-}
-
-function applyDictData(store: ReturnType<typeof useBaseStore>, data: unknown) {
-  store.setState(data as any)
-  if (store.word.studyIndex >= 3) {
-    if (!store.sdict.custom && !store.sdict.system && !store.sdict.words.length) {
-      const book = store.sdict
-      _getDictDataByUrl(book).then(r => {
-        const current = store.word.bookList.find(item => String(item.id) === String(book.id))
-        if (current === book) Object.assign(current, r)
-      }).catch(error => console.warn('同步后词书正文加载失败，学习记录已保留', error))
-    }
-  }
-  if (store.article.studyIndex >= 1) {
-    if (!store.sbook.custom && !store.sbook.system && !store.sbook.articles.length) {
-      _getDictDataByUrl(store.sbook, DictType.article).then(r => {
-        store.article.bookList[store.article.studyIndex] = r
-      })
-    }
-  }
-}
-
-async function fetchServerMeta(types: SyncDataType[], client?: SupabaseClient | null): Promise<RemoteMetaRow[] | null> {
-  if (!client && CloudSync.check()) {
-    try {
-      return (await CloudSync.fetchMeta(types)) as RemoteMetaRow[]
-    } catch (error) {
-      setSyncStatus('error', (error as Error)?.message ?? String(error))
-      return null
-    }
-  }
-  const sb = getSyncClient(client)
-  if (!sb) return null
-  try {
-    const { data, error } = await sb.from('typewords_data').select('type, updated_at, data_version').in('type', types)
-    if (error) {
-      console.log('sp-error', error)
-      setSyncStatus('error', error?.message ?? String(error))
-      return null
-    }
-    return (data ?? []) as RemoteMetaRow[]
-  } catch (error) {
-    console.log('sp-error', error)
-    setSyncStatus('error', error?.message ?? String(error))
-    return null
-  }
-}
-
-async function fetchServerDatas(
-  types: SyncDataType[],
-  client?: SupabaseClient | null
-): Promise<RemoteDataRow[] | null> {
-  if (!client && CloudSync.check()) {
-    try {
-      return (await CloudSync.fetchData(types)) as RemoteDataRow[]
-    } catch (error) {
-      setSyncStatus('error', (error as Error)?.message ?? String(error))
-      return null
-    }
-  }
-  const sb = getSyncClient(client)
-  if (!sb) return null
-  console.log('Fetching server data list', types)
-  try {
-    const { data, error } = await sb
-      .from('typewords_data')
-      .select('type, data, updated_at, data_version')
-      .in('type', types)
-    if (error) {
-      console.log('sp-error', error)
-      setSyncStatus('error', error?.message ?? String(error))
-      return null
-    }
-    return (data ?? []) as RemoteDataRow[]
-  } catch (error) {
-    console.log('sp-error', error)
-    setSyncStatus('error', error?.message ?? String(error))
-    return null
-  }
-}
-
-async function compareResultByType(
-  type: SyncDataType,
-  remoteMetaMap: Map<SyncDataType, RemoteMetaRow>,
-  localMeta?: LocalPersistMeta
-): Promise<CompareResult> {
-  const remoteMeta = remoteMetaMap.get(type)
-  if (!remoteMeta) return CompareResult.NoRemote
-  if (localMeta == null) {
-    localMeta = await getLocalPersistMeta(type)
-  }
-  if (!localMeta) {
-    if (remoteMeta.data_version == null) {
-      return CompareResult.NoRemote
-    } else {
-      //如果本地没数据，但远程有版本号，则远程新
-      return CompareResult.RemoteNewer
-    }
-  }
-  //如果本地没有更新日期，那必定是刚更新版本，updated_at和sb 一起上线，这里特殊处理即可
-  if (!localMeta?.updated_at) return CompareResult.LocalNewer
-  const currentVersion = getDataVersion(type)
-  return shouldFetchRemote(localMeta.updated_at, remoteMeta.updated_at, remoteMeta.data_version, currentVersion)
-}
-
-async function upsertServerDatas(
-  rows: RemoteDataRow[],
-  client?: SupabaseClient | null,
-  options: { keepalive?: boolean } = {}
-): Promise<boolean> {
-  if (!client && CloudSync.check()) {
-    try {
-      await CloudSync.upsert(rows, options)
-      return true
-    } catch (error) {
-      setSyncStatus('error', (error as Error)?.message ?? String(error))
-      return false
-    }
-  }
-  const sb = getSyncClient(client)
-  if (!sb) return false
-  try {
-    console.log(
-      'Upserting server data',
-      rows.map(row => row.type)
-    )
-    const { error } = await (sb as any).from('typewords_data').upsert(rows, { onConflict: 'type' })
-    if (error) {
-      setSyncStatus('error', error?.message ?? String(error))
-      return false
-    }
-    return true
-  } catch (e) {
-    setSyncStatus('error', (e as Error)?.message ?? String(e))
-    return false
-  }
-}
-
-async function applyRemoteDataByType(
-  type: SyncDataType,
-  row: RemoteDataRow,
-  store: ReturnType<typeof useBaseStore>,
-  settingStore: ReturnType<typeof useSettingStore>
-): Promise<void> {
-  if (!row) return
-  const now = new Date().toISOString()
-  if (type === SyncDataType.setting) {
-    const normalized = await checkAndUpgradeSaveSetting({
-      val: row.data,
-      version: row.data_version,
-    })
-    normalized.load = true
-    normalized._ignoreWatch = true
-    settingStore.setState(normalized)
-    await persistLocalState(SyncDataType.setting, normalized, row.updated_at ?? now)
-    return
-  }
-  if (type === SyncDataType.dict) {
-    const normalized = await checkAndUpgradeSaveDict({
-      val: row.data,
-      version: row.data_version,
-    })
-    normalized.load = true
-    normalized._ignoreWatch = true
-    applyDictData(store, normalized)
-    await persistLocalState(SyncDataType.dict, normalized, row.updated_at ?? now)
-    return
-  }
-  if (type === SyncDataType.practice_word) {
-    // `practice_word` is a per-dictionary bundle. A newer row from another
-    // device may contain only a newer entry for another dictionary, so merge
-    // its entries instead of replacing every local unfinished session.
-    // Legacy null means no remote cache, not an instruction to erase local work.
-    // Explicit per-book deletion is represented by a timestamped tombstone.
-    const local = await getPracticeWordCacheLocalWithMeta()
-    const merged = mergePracticeWordCacheBundles(
-      local?.val,
-      row.data as PracticeWordCachePayload,
-      local?.updated_at,
-      row.updated_at
-    )
-    if (merged) {
-      await persistLocalState(type, merged, row.updated_at ?? local?.updated_at ?? now)
-      row.data = merged
-    }
-    return
-  }
-  await persistLocalState(type, row.data, row.updated_at ?? now)
-}
-
-function getDictSyncBlockReason(state: BaseState): string | null {
-  const data = shakeCommonDict(state)
-  const bookList = data.article.bookList.filter(v => v.custom || v.system)
-  const audioFileIdList: string[] = []
-  bookList.forEach(v => {
-    v.articles
-      .filter(s => !s.audioSrc && s.audioFileId)
-      .forEach(a => {
-        audioFileIdList.push(a.audioFileId)
-      })
-  })
-  return audioFileIdList.length ? DICT_SYNC_BLOCK_REASON : null
-}
-
-type HashBackupIndexItem = {
-  hash: string
-  key: string
-  createdAt: number
-}
-
-function normalizeHash(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null
-  const v = raw.trim()
-  return v.length > 0 ? v : null
-}
-
+type Options = { pullWhenRemoteNewer?: boolean; pushWhenLocalNewer?: boolean; canSyncRemote?: boolean }
 export async function ensureHashGuardBeforeInit() {
-  //@ts-ignore
-  const runtimeConfig = useRuntimeConfig()
-
-  try {
-    const currentHash = normalizeHash(runtimeConfig?.public?.latestCommitHash)
-    if (!currentHash) return
-
-    const localHash = normalizeHash(await get(WEBSITE_VERSION_HASH))
-    let res = true
-    if (localHash !== currentHash) {
-      res = await saveHashSnapshot(localHash ?? currentHash, '')
-    }
-    res && (await set(WEBSITE_VERSION_HASH, currentHash))
-  } catch (e) {
-    console.warn('init hash guard failed', e)
-  }
-}
-
-export async function saveHashSnapshot(currentHash: string, previousHash: string | null): Promise<boolean> {
-  const backupKey = `${BACKUP_KEY}${currentHash}`
-  const createdAt = Date.now()
-
-  const snapshot: Snapshot = {
-    meta: {
-      currentHash,
-      previousHash,
-      createdAt,
-    },
-    data: {
-      dict: await get(SAVE_DICT_KEY.key),
-      setting: await get(SAVE_SETTING_KEY.key),
-      [PRACTICE_WORD_CACHE.key]: (await get(PRACTICE_WORD_CACHE.key)) ?? null,
-      [PRACTICE_ARTICLE_CACHE.key]: (await get(PRACTICE_ARTICLE_CACHE.key)) ?? null,
-    },
-  }
-  if (!snapshot.data.dict) {
-    return false
-  }
-  await set(backupKey, snapshot)
-
-  const rawIndex = (await get(BACKUP_INDEX_KEY)) as HashBackupIndexItem[] | undefined
-  const index = Array.isArray(rawIndex)
-    ? rawIndex.filter(item => item && typeof item.hash === 'string' && typeof item.key === 'string')
-    : []
-
-  let rIndex = index.findIndex(item => item.hash === currentHash)
-  if (rIndex === -1) {
-    index.push({ hash: currentHash, key: backupKey, createdAt })
-  } else {
-    index[rIndex] = { hash: currentHash, key: backupKey, createdAt }
-  }
-
-  if (index.length > 15) {
-    index.sort((a, b) => a.createdAt - b.createdAt)
-    const removed = index.splice(0, index.length - 10)
-    for (const item of removed) {
-      await del(item.key)
-    }
-  }
-  await set(BACKUP_INDEX_KEY, index)
-  return true
+  // @ts-ignore Nuxt runtime; no data copies merely because the build changed.
+  const config = useRuntimeConfig()
+  if (config?.public?.latestCommitHash) await set(WEBSITE_VERSION_HASH, config.public.latestCommitHash)
 }
 
 export function useDataSyncPersistence() {
-  const store = useBaseStore()
-  const settingStore = useSettingStore()
-
+  const store = useBaseStore(), settings = useSettingStore()
   async function readSafeSnapshot(): Promise<SafeRow[]> {
-    if (getDictSyncBlockReason(store.$state)) throw new Error(DICT_SYNC_BLOCK_REASON)
     const [word, article] = await Promise.all([getPracticeWordCacheBundleLocal(), getPracticeArticleCacheLocal()])
-    const dict = shakeCommonDict(store.$state)
-    const setting = JSON.parse(JSON.stringify(toRaw(settingStore.$state)))
-    for (const data of [dict, setting]) { delete data.load; delete data._ignoreWatch }
+    const dict = shakeCommonDict(store.$state), setting = JSON.parse(JSON.stringify(toRaw(settings.$state)))
+    for (const data of [dict, setting]) { delete data.load; delete data._ignoreWatch; delete data.__updateLocalData }
     return [
-      { type: 'dict', data: dict, data_version: SAVE_DICT_KEY.version },
-      { type: 'setting', data: setting, data_version: SAVE_SETTING_KEY.version },
-      { type: 'practice_word', data: word, data_version: PRACTICE_WORD_CACHE.version },
-      { type: 'practice_article', data: article, data_version: PRACTICE_ARTICLE_CACHE.version },
+      { type: 'dict', data: dict, data_version: 4 }, { type: 'setting', data: setting, data_version: 25 },
+      { type: 'practice_word', data: word, data_version: 3 }, { type: 'practice_article', data: article, data_version: 1 },
     ]
   }
-  configureSafeSync({
-    read: readSafeSnapshot,
-    upgrade: rows => rows.map(row => {
-      if (row.type !== SyncDataType.practice_word) return row
-      if (row.data_version > PRACTICE_WORD_CACHE.version) throw new Error('备份来自更新版本，请先更新网页。')
-      return { ...row, data: upgradePracticeScopes(row.data), data_version: PRACTICE_WORD_CACHE.version }
-    }),
-    apply: async (rows, expected) => {
-      const normalized = normalizeSyncRows(rows)
-      for (const row of normalized) {
-        if (row.data_version > getDataVersion(row.type as SyncDataType)) throw new Error('云端数据来自更新版本，请先更新网页；本机数据未改动。')
-      }
-      const dictRow = normalized.find(r => r.type === 'dict')!
-      const settingRow = normalized.find(r => r.type === 'setting')!
-      const dict = dictRow.data ? await checkAndUpgradeSaveDict({ val: dictRow.data, version: dictRow.data_version }) : getDefaultBaseState()
-      const setting = settingRow.data ? await checkAndUpgradeSaveSetting({ val: settingRow.data, version: settingRow.data_version }) : getDefaultSettingState()
-      dict.load = true; dict._ignoreWatch = true
-      setting.load = true; setting._ignoreWatch = true
-      await serializeSyncLocalWrite(async () => {
-        if (rowsSignature(await readSafeSnapshot()) !== expected) throw new Error('本机进度在同步期间改变，请重新比较；未覆盖本机。')
-        const now = new Date().toISOString()
-        const values: [IDBValidKey, string][] = normalized.map(row => {
-          const type = row.type as SyncDataType
-          const key = type === SyncDataType.practice_word ? PRACTICE_WORD_CACHE.key : type === SyncDataType.practice_article ? PRACTICE_ARTICLE_CACHE.key : getPersistKey(type)
-          const val = type === SyncDataType.dict ? dict : type === SyncDataType.setting ? setting : type === SyncDataType.practice_word ? upgradePracticeScopes(row.data) : row.data
-          return [key, JSON.stringify({ val, version: getDataVersion(type), updated_at: now })]
-        })
-        // A single IDB transaction keeps dictionary completion and task caches together.
-        await setMany(values)
-        applyDictData(store, dict)
-        settingStore.setState(setting)
-      })
-    },
+  async function readArchive() {
+    const rows = await readSafeSnapshot()
+    const needed = new Set(requiredAttachmentIDs(rows))
+    const files: Attachment[] = (await get<Attachment[]>(LOCAL_FILE_KEY) || []).filter(f => needed.has(f.id))
+    validateAttachments(rows, files)
+    return { rows, files }
+  }
+  configureLocalHistory(async () => {
+    const types = Object.keys(DATA_KEYS)
+    const values = await getMany([...types.map(t => DATA_KEYS[t]), LOCAL_FILE_KEY])
+    const fallback = await readSafeSnapshot()
+    const rows = types.map((type, i) => {
+      if (!values[i]) return fallback.find(r => r.type === type)!
+      const saved = typeof values[i] === 'string' ? JSON.parse(values[i]) : values[i]
+      return { type, data: saved.val, data_version: saved.version }
+    })
+    const ids = new Set(requiredAttachmentIDs(rows))
+    const files: Attachment[] = (values[4] || []).filter((f: Attachment) => ids.has(f.id))
+    validateRows(rows); validateAttachments(rows, files)
+    return { rows, files }
   })
 
-  async function pullIfRemoteNewer(
-    type: SyncDataType,
-    client?: SupabaseClient | null,
-    mergePracticeWordRemoteData?: (remoteData: unknown, remoteUpdatedAt?: string) => Promise<unknown>
-  ): Promise<RemoteDataRow | null> {
-    if (!client && CloudSync.check()) { scheduleSafeSync(); return null }
-    const remoteMetas = await fetchServerMeta([type], client)
-    if (!remoteMetas) return null
-    const remoteMetaMap = new Map(remoteMetas.map(item => [item.type, item]))
-    const compareResult = await compareResultByType(type, remoteMetaMap)
-    console.log('pullIfRemoteNewer-compareResult', CompareResult[compareResult], type)
-    if (compareResult === CompareResult.RemoteNewer) {
-      const remoteData = await fetchServerDatas([type], client)
-      if (remoteData?.length) {
-        if (type === SyncDataType.practice_word && mergePracticeWordRemoteData) {
-          remoteData[0].data = await mergePracticeWordRemoteData(remoteData[0].data, remoteData[0].updated_at)
-        } else {
-          await applyRemoteDataByType(type, remoteData[0], store, settingStore)
-        }
-        return remoteData[0]
-      }
+  async function prepareReplacement(rows: SafeRow[], files: Attachment[] = []) {
+    validateRows(rows)
+    const normalized = normalizeSyncRows(rows)
+    for (const row of normalized) {
+      if (row.type === 'dict') row.data = await checkAndUpgradeSaveDict({ val: row.data, version: row.data_version }, true)
+      if (row.type === 'setting') row.data = await checkAndUpgradeSaveSetting({ val: row.data, version: row.data_version }, true)
+      if (row.type === 'practice_word') row.data = upgradePracticeScopes(row.data)
+      row.data_version = DATA_VERSIONS[row.type]
     }
-    return null
+    const available = new Map((await get<Attachment[]>(LOCAL_FILE_KEY) || []).map(f => [f.id, f]))
+    for (const file of files) available.set(file.id, file)
+    validateAttachments(normalized, [...available.values()])
+    return normalized
   }
 
-  // 同步数据，远程新则拉取（默认），本地新则推送（默认）
-  async function syncData(
-    localData: Partial<Record<SyncDataType, SaveData | null>>,
-    options?: SaveLocalAndSyncOptions
-  ) {
-    if (!options?.client && CloudSync.check()) {
-      // Automatic sync never replaces an active practice page's in-memory state.
-      const startupDownload = import.meta.client && options?.pushWhenLocalNewer !== false && !/\/practice-(words|articles)\//.test(location.pathname)
-      await syncSafely(startupDownload)
-      return
-    }
-    try {
-      const remoteMetas = await fetchServerMeta(Object.keys(localData) as any)
-      if (!remoteMetas) return
-      const remoteMetaMap = new Map(remoteMetas.map(item => [item.type, item]))
-      let pull = []
-      let push = []
-      for (const type of Object.keys(localData)) {
-        const compareResult = await compareResultByType(type as SyncDataType, remoteMetaMap)
-        console.log('syncData-compareResult', CompareResult[compareResult], type)
-        if (compareResult === CompareResult.RemoteNewer) {
-          pull.push(type)
-        }
-        if ([CompareResult.LocalNewer, CompareResult.NoRemote].includes(compareResult)) {
-          push.push(type)
-        }
-      }
-
-      if (pull.length) {
-        const rows = await fetchServerDatas(pull)
-        for (const item of rows ?? []) {
-          await applyRemoteDataByType(item.type, item, store, settingStore)
-        }
-      }
-
-      if (push.length && options?.pushWhenLocalNewer !== false) {
-        let rows = []
-        for (const type of push) {
-          let item = localData[type]
-          rows.push({ type, data: item.val, data_version: item.version, updated_at: item.updated_at })
-        }
-        await upsertServerDatas(rows)
-      }
-
-      if (getSyncStatus().status !== 'error') {
-        setSyncStatus('success')
-      }
-    } catch (error) {
-      setSyncStatus('error', error?.message ?? String(error))
-    }
-  }
-
-  async function saveLocalAndSync(type: SyncDataType, data: unknown, options?: SaveLocalAndSyncOptions) {
-    try {
-      //先取出本地数据的meta值，以用后续与云端数据比较
-      const localMeta = await getLocalPersistMeta(type)
-      // console.log('saveLocalAndSync-localMeta', localMeta)
-      //先保存，再同步
-      const updated_at = new Date().toISOString()
-      await persistLocalState(type, data, updated_at)
-
-      if (!options?.client && CloudSync.check()) {
-        if (options?.canSyncRemote !== false) scheduleSafeSync()
-        return
-      }
-
-      const canSyncRemote = options?.canSyncRemote !== false
-      if (!canSyncRemote) return
-      const remoteMetas = await fetchServerMeta([type], options?.client)
-      if (!remoteMetas) return
-      const remoteMetaMap = new Map(remoteMetas.map(item => [item.type, item]))
-      // console.log('saveLocalAndSync-remoteMetaMap', remoteMetaMap.get(type))
-      const compareResult = await compareResultByType(type, remoteMetaMap, localMeta)
-      console.log('saveLocalAndSync-compareResult', CompareResult[compareResult], type)
-      //如果云端数据较新并允许拉取，则拉取云端数据，之后不再上传本地数据
-      if (compareResult === CompareResult.RemoteNewer && options?.pullWhenRemoteNewer !== false) {
-        const remoteData = await fetchServerDatas([type], options?.client)
-        if (remoteData?.length) {
-          await applyRemoteDataByType(type, remoteData[0], store, settingStore)
-        }
-        //防止后端数据为空，本地强制上传了
-        return
-      }
-      const data_version = getDataVersion(type)
-      await upsertServerDatas([{ type, data, data_version, updated_at }], options?.client)
-    } finally {
-      if (!CloudSync.check() && getSyncStatus()?.status !== 'error') {
-        setSyncStatus('success')
-      }
-    }
-  }
-
-  async function saveLocalOnly(
-    type: SyncDataType,
-    data: unknown,
-    updatedAt = new Date().toISOString()
-  ): Promise<string> {
-    await persistLocalState(type, data, updatedAt)
-    if (CloudSync.check()) scheduleSafeSync()
-    return updatedAt
-  }
-
-  async function pushSnapshotToRemote(
-    type: SyncDataType,
-    data: unknown,
-    updatedAt: string,
-    client?: SupabaseClient | null,
-    keepalive: boolean = false,
-    mergePracticeWordData?: (remoteData: unknown, remoteUpdatedAt?: string) => Promise<unknown | null>
-  ): Promise<boolean> {
-    if (!client && CloudSync.check()) { scheduleSafeSync(); return true }
-    if (!client && !CloudSync.check() && !Supabase.check()) return true
-    if (type === SyncDataType.practice_word && data != null) {
-      // The server stores one row per sync type. Read-and-merge before each
-      // ordinary practice push so a device saving dictionary A cannot erase
-      // dictionary B that was saved on another device.
-      const remoteRows = await fetchServerDatas([type], client)
-      // A failed read is not the same as an empty account. Preserve the local
-      // pending bundle and retry later instead of risking an overwrite.
-      if (remoteRows == null) return false
-      const remote = remoteRows?.[0]
-      // Empty legacy remote rows must pass through the merge and upload path.
-      // Treating null as a reset here erased local progress on every autosave.
-      if (mergePracticeWordData) {
-        const merged = await mergePracticeWordData(remote?.data, remote?.updated_at)
-        if (merged == null) return false
-        data = merged
-      } else {
-        // Re-read after the remote request: a local save can happen while the
-        // request is in flight, and it must take part in the merge.
-        const local = await getPracticeWordCacheLocalWithMeta()
-        const merged = mergePracticeWordCacheBundles(
-          local?.val,
-          data as PracticeWordCachePayload,
-          local?.updated_at,
-          updatedAt
-        )
-        const mergedWithRemote = mergePracticeWordCacheBundles(
-          merged,
-          remote?.data as PracticeWordCachePayload | undefined,
-          updatedAt,
-          remote?.updated_at
-        )
-        if (mergedWithRemote) {
-          data = mergedWithRemote
-          await persistLocalState(type, mergedWithRemote, updatedAt)
-        }
-      }
-    }
-    const success = await upsertServerDatas(
-      [{ type, data, data_version: getDataVersion(type), updated_at: updatedAt }],
-      client,
-      { keepalive }
-    )
-    if (success) setSyncStatus('success')
-    return success
-  }
-
-  async function forcePushLocalDataToRemote(data: BackupData['val'], client?: SupabaseClient | null): Promise<boolean> {
-    if (!client && (CloudSync.check() || !Supabase.check())) {
-      // Existing import/reset UI remains supported, but no longer force-writes cloud.
-      const wordCache = data?.[PRACTICE_WORD_CACHE.key]
-      const articleCache = data?.[PRACTICE_ARTICLE_CACHE.key]
-      await replaceLocalSnapshot([
-        { type: 'dict', data: data.dict.val, data_version: SAVE_DICT_KEY.version },
-        { type: 'setting', data: data.setting.val, data_version: SAVE_SETTING_KEY.version },
-        { type: 'practice_word', data: typeof wordCache === 'object' ? wordCache?.val ?? null : null, data_version: PRACTICE_WORD_CACHE.version },
-        { type: 'practice_article', data: typeof articleCache === 'object' ? articleCache?.val ?? null : null, data_version: PRACTICE_ARTICLE_CACHE.version },
-      ], '导入或重置前')
-      return true
-    }
-    let syncResult = true
-    const updated_at = new Date().toISOString()
-    const rows: Array<{ type: SyncDataType; data: unknown; data_version: number; updated_at: string }> = [
-      { type: SyncDataType.dict, data: data.dict.val, data_version: SAVE_DICT_KEY.version, updated_at },
-      { type: SyncDataType.setting, data: data.setting.val, data_version: SAVE_SETTING_KEY.version, updated_at },
-      {
-        type: SyncDataType.practice_word,
-        //@ts-ignore
-        data: data?.[PRACTICE_WORD_CACHE.key]?.val ?? null,
-        data_version: PRACTICE_WORD_CACHE.version,
-        updated_at,
-      },
-      {
-        type: SyncDataType.practice_article,
-        //@ts-ignore
-        data: data?.[PRACTICE_ARTICLE_CACHE.key]?.val ?? null,
-        data_version: PRACTICE_ARTICLE_CACHE.version,
-        updated_at,
-      },
-    ]
-    if (!client && CloudSync.check()) {
-      try {
-        await CloudSync.upsert(rows)
-      } catch (error) {
-        syncResult = false
-        setSyncStatus('error', (error as Error)?.message ?? String(error))
-      }
-    } else {
-      const sb = getSyncClient(client)
-      if (sb) {
-        try {
-          const { error } = await (sb as any).from('typewords_data').upsert(rows, { onConflict: 'type' })
-          if (error) {
-            syncResult = false
-            setSyncStatus('error', error?.message ?? String(error))
-          }
-        } catch (error) {
-          syncResult = false
-          setSyncStatus('error', (error as Error)?.message ?? String(error))
-        }
-      } else {
-        syncResult = false
-      }
-    }
-    await persistLocalState(SyncDataType.dict, data.dict.val, updated_at)
-    await persistLocalState(SyncDataType.setting, data.setting.val, updated_at)
-    //@ts-ignore
-    await persistLocalState(SyncDataType.practice_word, data?.[PRACTICE_WORD_CACHE.key]?.val ?? null, updated_at)
-    //@ts-ignore
-    await persistLocalState(SyncDataType.practice_article, data?.[PRACTICE_ARTICLE_CACHE.key]?.val ?? null, updated_at)
-    return syncResult
-  }
-
-  async function pullAllRemoteToLocal(client?: SupabaseClient | null): Promise<boolean> {
-    if (!client && CloudSync.check()) {
-      CloudSync.setStatus('conflict', '请在云端同步页查看差异后下载，已阻止直接覆盖。')
-      return false
-    }
-    const sb = getSyncClient(client)
-    if (!sb) return false
-    try {
-      const { data, error } = await (sb as any)
-        .from('typewords_data')
-        .select('type, data, updated_at, data_version')
-        .in('type', ALL_SYNC_TYPES)
-        .not('data_version', 'is', null)
-      if (error) {
-        setSyncStatus('error', error?.message ?? String(error))
-        return false
-      }
-      const rows = (data ?? []) as RemoteDataRow[]
-      const map = new Map(rows.map(item => [item.type, item]))
-      for (const type of ALL_SYNC_TYPES) {
-        await applyRemoteDataByType(type, map.get(type) ?? null, store, settingStore)
-      }
-      setSyncStatus('success')
-      return true
-    } catch (error) {
-      setSyncStatus('error', error?.message ?? String(error))
-      return false
-    }
-  }
-
-  async function prepareDictState(
-    state: BaseState = store.$state
-  ): Promise<{ data: BaseState; canSyncRemote: boolean }> {
-    const data = shakeCommonDict(state)
-    const blockReason = getDictSyncBlockReason(state)
-    const audioFileIdList: string[] = []
-    if (blockReason) {
-      const bookList = data.article.bookList.filter(v => v.custom || v.system)
-      bookList.forEach(v => {
-        v.articles
-          .filter(s => !s.audioSrc && s.audioFileId)
-          .forEach(a => {
-            audioFileIdList.push(a.audioFileId)
-          })
+  async function apply(rows: SafeRow[], expected: string, options: { files?: Attachment[]; replacement?: boolean; beforeCommit?: () => void } = {}) {
+    validateRows(rows)
+    const normalized = normalizeSyncRows(rows)
+    const dictRow = normalized.find(r => r.type === 'dict')!, settingRow = normalized.find(r => r.type === 'setting')!
+    const dict = await checkAndUpgradeSaveDict({ val: dictRow.data, version: dictRow.data_version }, true)
+    const setting = await checkAndUpgradeSaveSetting({ val: settingRow.data, version: settingRow.data_version }, true)
+    dict.load = true; dict._ignoreWatch = true
+    setting.load = true; setting._ignoreWatch = true
+    await serializeSyncLocalWrite(async () => {
+      await checkpointBeforeNewDate().catch(console.warn)
+      if (rowsSignature(await readSafeSnapshot()) !== expected) throw Error('本机进度已变化，请重新比较；未覆盖本机。')
+      const existing: Attachment[] = await get(LOCAL_FILE_KEY) || []
+      const supplied = options.files ?? []
+      const merged = new Map(existing.map(f => [f.id, f]))
+      for (const file of supplied) merged.set(file.id, file)
+      validateAttachments(normalized, [...merged.values()])
+      const now = new Date().toISOString()
+      const values: [IDBValidKey, unknown][] = normalized.map(row => {
+        const data = row.type === 'dict' ? dict : row.type === 'setting' ? setting : row.type === 'practice_word' ? upgradePracticeScopes(row.data) : row.data
+        return [DATA_KEYS[row.type], JSON.stringify({ val: data, version: DATA_VERSIONS[row.type], updated_at: now })]
       })
+      // Keep old attachments while current data or legacy histories may reference them.
+      if (supplied.length) values.push([LOCAL_FILE_KEY, [...merged.values()]])
+      if (options.replacement) values.push([LOCAL_REPLACEMENT_KEY, true])
+      values.push([HISTORY_DIRTY_KEY, now])
+      options.beforeCommit?.()
+      await setMany(values)
+      store.setState(dict); settings.setState(setting)
+      notifyPracticeWordCache()
+      markHistoryDirty()
+    }, 'replacement', false)
+    const book = store.sdict
+    if (book?.id && !book.custom && !book.system && !book.words.length) {
+      void _getDictDataByUrl(book).then(result => { if (store.sdict === book) Object.assign(book, result) }).catch(console.warn)
     }
+    const article = store.sbook
+    if (article?.id && !article.custom && !article.system && !article.articles.length) {
+      void _getDictDataByUrl(article, DictType.article).then(result => { if (store.sbook === article) Object.assign(article, result) }).catch(console.warn)
+    }
+  }
 
-    if (blockReason) {
-      const result: Array<{ id: string; file: Blob }> = []
-      const fileList = (await get(LOCAL_FILE_KEY)) as Array<{ id: string; file: Blob }> | undefined
-      const files = fileList ?? []
-      audioFileIdList.forEach(id => {
-        const item = files.find(file => file.id === id)
-        item && result.push(item)
-      })
-      await set(LOCAL_FILE_KEY, result)
-      if (Supabase.check() || CloudSync.check()) {
-        setSyncStatus('error', blockReason)
+  configureSafeSync({
+    read: readSafeSnapshot, apply, flush: async () => {
+      await flushActiveEditors()
+      if (store.load && settings.load) {
+        await saveDictState(store.$state, { canSyncRemote: false })
+        await saveLocalOnly(SyncDataType.setting, JSON.parse(JSON.stringify(toRaw(settings.$state))))
       }
-      return { data, canSyncRemote: false }
-    }
+    }, checkpoint: () => serializeSyncLocalWrite(checkpointLocalHistory, 'history', false),
+    beforeUpload: rows => { if (requiredAttachmentIDs(rows).length) throw Error('本机文章包含未上传的音频。请用完整ZIP在设备间迁移；本机保存和历史仍可使用。') },
+    upgrade: rows => { validateRows(rows); return rows.map(row => row.type === 'practice_word' ? { ...row, data: upgradePracticeScopes(row.data), data_version: 3 } : row) },
+  })
 
-    return { data, canSyncRemote: true }
+  async function saveLocalOnly(type: SyncDataType, val: any, updatedAt = new Date().toISOString()) {
+    await serializeSyncLocalWrite(async () => {
+      await checkpointBeforeNewDate().catch(console.warn)
+      const value = type === SyncDataType.practice_word ? upgradePracticeScopes(val) : val
+      await setMany([[DATA_KEYS[type], JSON.stringify({ val: value, version: DATA_VERSIONS[type], updated_at: updatedAt })], [HISTORY_DIRTY_KEY, updatedAt]])
+      if (type === SyncDataType.practice_word) notifyPracticeWordCache()
+      markHistoryDirty()
+    }, type)
   }
-
-  async function saveDictState(state: BaseState = store.$state, options?: SaveLocalAndSyncOptions) {
-    const { data, canSyncRemote } = await prepareDictState(state)
-    await saveLocalAndSync(SyncDataType.dict, data, { ...options, canSyncRemote })
+  async function saveLocalAndSync(type: SyncDataType, val: any, options: Options = {}) {
+    await saveLocalOnly(type, val)
+    if (options.canSyncRemote !== false) scheduleSafeSync()
   }
-
-  async function getLocalCompactDataByType(type: SyncDataType) {
-    if (type === SyncDataType.practice_word) return await getPracticeWordCacheBundleLocal()
-    if (type === SyncDataType.practice_article) return await getPracticeArticleCacheLocal()
-    if (type === SyncDataType.dict) return shakeCommonDict(store.$state)
-    if (type === SyncDataType.setting) return settingStore.$state
+  async function saveDictState(data: BaseState = store.$state, options: Options = {}) {
+    await saveLocalAndSync(SyncDataType.dict, shakeCommonDict(data), options)
   }
-
+  async function syncData(_data?: Partial<Record<SyncDataType, SaveData | null>>, options: Options = {}) {
+    if (CloudSync.check()) await syncSafely(options.pushWhenLocalNewer !== false && !/\/practice-(words|articles)\//.test(location.pathname))
+  }
+  // Practice loaders never pull individual rows; only whole-snapshot CAS may replace data.
+  async function pullIfRemoteNewer(..._args: any[]): Promise<any> { return null }
+  async function pushSnapshotToRemote(..._args: any[]) { scheduleSafeSync(); return true }
+  async function forcePushLocalDataToRemote(data: BackupData['val']) { await replaceLocalSnapshot(decodeArchive({ version: 5, val: data }), '导入'); return true }
   async function clear() {
-    let d = getDefaultBaseState()
-    d.load = true
-    let d1 = getDefaultSettingState()
-    d1.load = true
-    let data: any = {
-      dict: { val: d },
-      setting: { val: d1 },
-      [PRACTICE_WORD_CACHE.key]: null,
-      [PRACTICE_ARTICLE_CACHE.key]: null,
-      // @deprecated 大版本5废弃
-      [APP_VERSION.key]: null,
-    }
-    const result = await forcePushLocalDataToRemote(data)
-    store.setState(d)
-    settingStore.setState(d1)
-    return result
+    const rows: SafeRow[] = [
+      { type: 'dict', data: getDefaultBaseState(), data_version: 4 }, { type: 'setting', data: getDefaultSettingState(), data_version: 25 },
+      { type: 'practice_word', data: null, data_version: 3 }, { type: 'practice_article', data: null, data_version: 1 },
+    ]
+    await replaceLocalSnapshot(rows, '重置')
+    return true
   }
-
-  return {
-    pullIfRemoteNewer,
-    saveLocalAndSync,
-    saveLocalOnly,
-    pushSnapshotToRemote,
-    saveDictState,
-    forcePushLocalDataToRemote,
-    pullAllRemoteToLocal,
-    getLocalCompactDataByType,
-    syncData,
-    getDictSyncBlockReason,
-    clear,
+  async function getLocalCompactDataByType(type: SyncDataType) {
+    if (type === SyncDataType.practice_word) return getPracticeWordCacheBundleLocal()
+    if (type === SyncDataType.practice_article) return getPracticeArticleCacheLocal()
+    return (await readSafeSnapshot()).find(row => row.type === type)?.data
   }
+  return { readArchive, readSafeSnapshot, prepareReplacement, primeLocalHistory, saveLocalOnly, saveLocalAndSync, saveDictState, syncData, pullIfRemoteNewer, pushSnapshotToRemote, forcePushLocalDataToRemote, getLocalCompactDataByType, clear }
 }

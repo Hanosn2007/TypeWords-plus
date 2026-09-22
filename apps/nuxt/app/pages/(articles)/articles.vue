@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { myDictList } from '@typewords/core/apis'
 import { BaseButton, BaseIcon, BasePage, DeleteIcon, PopConfirm, Progress, Toast } from '@typewords/base'
 import Book from '@typewords/core/components/Book.vue'
-import { APP_NAME, AppEnv, DICT_LIST, LIB_JS_URL, Old_Host, Origin, TourConfig } from '@typewords/core/config/env.ts'
+import { APP_NAME, DICT_LIST, LIB_JS_URL, Old_Host, Origin, TourConfig } from '@typewords/core/config/env.ts'
 import { useBaseStore } from '@typewords/core/stores/base.ts'
 import { useRuntimeStore } from '@typewords/core/stores/runtime.ts'
 import { useSettingStore } from '@typewords/core/stores/setting.ts'
@@ -73,12 +72,6 @@ async function init() {
   document.removeEventListener('visibilitychange', onvisibilitychange)
   document.addEventListener('visibilitychange', onvisibilitychange)
 
-  if (AppEnv.CAN_REQUEST) {
-    let res = await myDictList({ type: 'article' })
-    if (res.success) {
-      store.setState(Object.assign(store.$state, res.data))
-    }
-  }
   let studyIndex = store.article.studyIndex
   if (studyIndex >= 1) {
     if (!store.sbook.custom && !store.sbook.articles.length) {

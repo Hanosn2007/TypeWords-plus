@@ -5,6 +5,11 @@ import { get, set } from 'idb-keyval'
 type CacheConfig = { key: string; version: number }
 
 const practiceWordCacheListeners = new Set<() => void>()
+export function notifyPracticeWordCache() {
+  for (const listener of practiceWordCacheListeners) {
+    try { listener() } catch (error) { console.warn('练习统计刷新失败', error) }
+  }
+}
 /** Notify views after a successful local write, including imports and remote merges. */
 export function subscribePracticeWordCache(listener: () => void): () => void {
   practiceWordCacheListeners.add(listener)

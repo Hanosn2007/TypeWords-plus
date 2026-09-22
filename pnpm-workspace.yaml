@@ -1,7 +1,5 @@
 packages:
   - apps/nuxt
-  - apps/vscode-web
-  - apps/vscode
   - packages/*
 allowBuilds:
   '@parcel/watcher': true

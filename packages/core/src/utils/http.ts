@@ -1,6 +1,6 @@
 import axios from 'axios'
 import type { AxiosInstance } from 'axios'
-import { AppEnv, ENV } from '../config/env.ts'
+import { ENV } from '../config/env.ts'
 import { Toast } from '@typewords/base'
 
 export const axiosInstance: AxiosInstance = axios.create({
@@ -10,7 +10,7 @@ export const axiosInstance: AxiosInstance = axios.create({
 axiosInstance.interceptors.request.use(
   config => {
     config.baseURL = ENV.API
-    if (AppEnv.CAN_REQUEST) config.headers.token = AppEnv.TOKEN
+    // Public dictionary lookup never sends an upstream account credential.
     return config
   },
   error => Promise.reject(error)

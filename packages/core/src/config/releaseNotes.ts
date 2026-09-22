@@ -19,6 +19,18 @@ export interface ReleaseVersion {
 export const RELEASE_NOTES: ReleaseVersion[] = [
   {
     version: APP_VERSION.version,
+    date: '2026-09-22',
+    title: '账号与数据统一管理',
+    summary: '统一本站账号、离线恢复与每日历史，保持现有学习进度',
+    features: [
+      { type: 'new', title: '账号与数据', desc: '本站登录、完整数据导入导出和历史恢复集中在同一入口' },
+      { type: 'improve', title: '离线恢复与事务保护', desc: '恢复先保存到本机，整份替换失败时保留原数据，云端差异由你确认' },
+      { type: 'new', title: '每日最新历史', desc: '北京时间每日一份，本机默认3个有效日期、最多30个，云端3个；支持删除与24小时撤销' },
+      { type: 'improve', title: '独立维护', desc: '退役旧账号、Supabase后台同步及VS Code客户端；旧数据仍提供迁移入口' },
+    ],
+  },
+  {
+    version: 3,
     date: '2026-06-22',
     title: '练习体验与导入升级',
     summary: '重复播放单词、点击查词、导入流程全面优化',

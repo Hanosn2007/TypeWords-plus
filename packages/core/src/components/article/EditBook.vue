@@ -7,8 +7,6 @@ import { useBaseStore } from '../../stores/base.ts'
 import { BaseButton, BaseInput, Form, FormItem, Option, Select, Toast, Textarea } from '@typewords/base'
 import { getDefaultDict } from '../../types'
 
-import { addDict } from '../../apis'
-import { AppEnv } from '../../config/env.ts'
 import { DictType } from '../../types'
 import { useI18n } from 'vue-i18n'
 
@@ -77,16 +75,6 @@ async function onSubmit() {
           Toast.warning($t('name_already_exists'))
           return
         } else {
-          if (AppEnv.CAN_REQUEST) {
-            loading = true
-            let res = await addDict(null, data)
-            loading = false
-            if (res.success) {
-              data = getDefaultDict(res.data)
-            } else {
-              return Toast.error(res.msg)
-            }
-          }
           source.bookList.push(cloneDeep(data))
           runtimeStore.editDict = data
           emit('submit', data)

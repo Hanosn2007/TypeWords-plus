@@ -43,11 +43,11 @@ function main() {
     // 检查源目录是否存在
     if (!fs.existsSync(sourceDir)) {
       console.error(`❌ 错误: 源目录不存在: ${sourceDir}`)
-      console.error('   请先运行 pnpm --filter vscode-web build')
+      console.error('   请先运行 pnpm build:web')
       process.exit(1)
     }
 
-    console.log(`📦 开始复制 vscode-web 构建产物...`)
+    console.log(`📦 开始复制 Web 构建产物...`)
     console.log(`   源目录: ${sourceDir}`)
     console.log(`   目标目录: ${targetDir}`)
 

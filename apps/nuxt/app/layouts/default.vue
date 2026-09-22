@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { BaseIcon, ToastComponent } from '@typewords/base'
 import Logo from '@typewords/core/components/Logo.vue'
-import MigrateDialog from '@typewords/core/components/dialog/MigrateDialog.vue'
 import IeDialog from '@typewords/core/components/dialog/IeDialog.vue'
-import { Origin } from '@typewords/core/config/env'
 import useTheme from '@typewords/core/hooks/theme.ts'
 import { useRuntimeStore } from '@typewords/core/stores/runtime.ts'
 import { useSettingStore } from '@typewords/core/stores/setting.ts'
@@ -13,7 +11,6 @@ import { useRoute, useRouter } from 'vue-router'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 import { useInit } from '@typewords/core/composables/useInit.ts'
 import { useI18n } from 'vue-i18n'
-import { Supabase } from '@typewords/core/utils/supabase.ts'
 import WordCollectPopover from '@typewords/core/components/word/WordCollectPopover.vue'
 
 const router = useRouter()
@@ -30,8 +27,6 @@ function toggleExpand(n: boolean) {
 
 watch(() => settingStore.sideExpand, toggleExpand)
 
-//迁移数据
-let showTransfer = $ref(false)
 
 watch(
   () => settingStore.load,
@@ -59,14 +54,6 @@ const showIcon = $computed(() => {
 onMounted(() => {
   init()
 
-  if (new URLSearchParams(window.location.search).get('from_old_site') === '1' && location.origin === Origin) {
-    if (localStorage.getItem('__migrated_from_2study_top__')) return
-    setTimeout(() => {
-      showTransfer = true
-    }, 1000)
-  }
-
-  window.umami?.track('sync', { check: Supabase.check() })
 })
 </script>
 
@@ -102,9 +89,9 @@ onMounted(() => {
           <IconFluentQuestionCircle20Regular />
           <span>{{ $t('help') }}</span>
         </NuxtLink>
-        <NuxtLink to="/cloud-login" class="row">
+        <NuxtLink to="/account-data" class="row">
           <IconFluentCloudSync20Regular />
-          <span>同步</span>
+          <span>账号与数据</span>
         </NuxtLink>
       </div>
       <div class="bottom flex justify-evenly">
@@ -135,9 +122,9 @@ onMounted(() => {
           <span>{{ $t('setting') }}</span>
           <div class="red-point" v-if="runtimeStore.isError"></div>
         </div>
-        <div class="nav-item" @click="router.push('/cloud-login')" :class="{ active: route.path === '/cloud-login' }">
+        <div class="nav-item" @click="router.push('/account-data')" :class="{ active: ['/account-data', '/cloud-login'].includes(route.path) }">
           <IconFluentCloudSync20Regular />
-          <span>同步</span>
+          <span>账号与数据</span>
         </div>
       </div>
       <div class="nav-toggle" @click="settingStore.mobileNavCollapsed = !settingStore.mobileNavCollapsed">
@@ -146,14 +133,13 @@ onMounted(() => {
       </div>
     </div>
 
-    <MigrateDialog v-model="showTransfer" @ok="init" />
 
     <IeDialog />
 
     <div class="flex-1 z-1 relative main-content">
       <div
         class="mt-3 center relative z-9999 pointer-events-none"
-        @click="router.push('/setting?index=6 ')"
+        @click="router.push('/account-data')"
         v-if="runtimeStore.isError"
       >
         <ToastComponent

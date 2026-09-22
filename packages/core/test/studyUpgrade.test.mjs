@@ -11,6 +11,7 @@ test('upgrade waits for approval, failed transaction retains old task, retry com
   let fail=true,commits=0
   const deps={vue:{shallowRef:value=>({value})},'idb-keyval':{get:async key=>db.get(key),setMany:async entries=>{if(fail)throw new Error('disk full');for(const [key,value]of entries)db.set(key,value);commits++}},'../utils/cache':{PRACTICE_WORD_CACHE:{key:'PracticeSaveWord'},upgradePracticeScopes},'../config/env':{SAVE_DICT_KEY:{key:'dict'},SAVE_SETTING_KEY:{key:'setting'}}}
   const m={exports:{}}
+  deps['../utils/atomicStorage']={atomicSetMany:deps['idb-keyval'].setMany}
   new Function('require','exports','module','localStorage',js)(name=>deps[name],m.exports,m,{getItem:()=>null})
   let resumed=false
   const waiting=m.exports.ensureStudyUpgrade().then(()=>{resumed=true})

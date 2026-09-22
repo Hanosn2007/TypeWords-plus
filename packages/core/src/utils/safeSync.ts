@@ -1,13 +1,25 @@
-import { get, set, update } from 'idb-keyval'
+import { get, set } from 'idb-keyval'
 import { CloudSync, CloudSyncError, CLOUD_TOKEN_KEY } from './cloudSync'
 import { decideSyncSignatures, hasLearningData, normalizeSyncRows, rowsSignatureAsync, type SafeRow, type SafeSnapshot, type SyncBaseline } from './syncPolicy'
 
-type Hooks = { read: () => Promise<SafeRow[]>; apply: (rows: SafeRow[], expected: string) => Promise<void>; upgrade?: (rows: SafeRow[]) => SafeRow[] }
+type Hooks = { read: () => Promise<SafeRow[]>; apply: (rows: SafeRow[], expected: string, options?: { files?: import('./dataArchive').Attachment[]; replacement?: boolean; beforeCommit?: () => void }) => Promise<void>; upgrade?: (rows: SafeRow[]) => SafeRow[]; flush?: () => Promise<void>; checkpoint?: () => Promise<void>; beforeUpload?: (rows: SafeRow[]) => void }
+export const LOCAL_REPLACEMENT_KEY = 'typewords-local-replacement-pending'
+const saveBarriers = new Set<() => Promise<unknown>>()
+export function registerSaveBarrier(barrier: () => Promise<unknown>) { saveBarriers.add(barrier) }
+export function localSaveStatus() { return { pending: pendingLocalWrites, failed: localSaveFailed } }
+export async function flushActiveEditors() {
+  const waits: Promise<unknown>[] = []
+  if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('typewords-save-before-update', { detail: waits }))
+  await Promise.all(waits)
+  await Promise.all([...saveBarriers].map(fn => fn()))
+  await waitForLocalSave()
+}
+async function checkpoint() {
+  try { await hooks.checkpoint?.() } catch (error) { if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('typewords-history-error', { detail: (error as Error).message })) }
+}
 type State = { baseline?: SyncBaseline; pending?: { expectedRevision: number; requestId: string; rows: SafeRow[]; reason?: string } }
-export type RecoveryPoint = { id: string; createdAt: string; account: number; reason: string; local: SafeRow[]; remote?: SafeSnapshot }
 export type SyncPreview = { local: SafeRow[]; remote: SafeSnapshot; account: number; signature: string }
 const OWNER = 'typewords-sync-owner-v2'
-const RECOVERY = 'typewords-sync-recovery-v2'
 let hooks: Hooks
 let automaticQueued = false
 let running: Promise<any> = Promise.resolve()
@@ -22,6 +34,7 @@ let localWrites: Promise<any> = Promise.resolve()
 let pendingLocalWrites = 0
 let localSaveFailed = false
 let savedReload = false
+const failedLocalKeys = new Set<string>()
 export async function waitForLocalSave() {
   await localWrites
   if (localSaveFailed) throw new Error('本机保存失败，请先导出数据，暂不刷新。')
@@ -38,13 +51,14 @@ export function closeProtectionMessage(): string {
   }
   return ''
 }
-export function serializeSyncLocalWrite<T>(work: () => Promise<T>): Promise<T> {
+export function serializeSyncLocalWrite<T>(work: () => Promise<T>, key = 'unknown', dirtyOnFailure = true): Promise<T> {
   pendingLocalWrites++
   const result = localWrites.catch(() => {}).then(() => {
     if (!tabWritable) throw new Error('另一个标签页正在保存数据，请关闭它后刷新。')
     return work()
   })
-  localWrites = result.then(() => {}, () => { localSaveFailed = true }).finally(() => {
+  localWrites = result.then(() => { failedLocalKeys.delete(key) }, () => { if (dirtyOnFailure) failedLocalKeys.add(key) }).finally(() => {
+    localSaveFailed = failedLocalKeys.size > 0
     pendingLocalWrites--
     if (typeof window !== 'undefined') window.dispatchEvent(new Event('typewords-sync-status'))
   })
@@ -116,17 +130,11 @@ function exclusive<T>(work: () => Promise<T>): Promise<T> {
   return result
 }
 
-export async function saveRecoveryPoint(reason: string, local: SafeRow[], remote?: SafeSnapshot, id = account) {
-  const point: RecoveryPoint = { id: crypto.randomUUID(), createdAt: new Date().toISOString(), account: id, reason, local: normalizeSyncRows(local), remote }
-  await update<RecoveryPoint[]>(RECOVERY, old => [...(old || []), point].slice(-3))
-  return point.id
-}
-export async function localRecoveryPoints(): Promise<RecoveryPoint[]> { return await get(RECOVERY) || [] }
-
 export async function prepareAuthentication() {
   suspendSafeSync()
   await running
-  await saveRecoveryPoint('登录前', await hooks.read(), undefined, (await get(OWNER)) || 0)
+  await hooks.flush?.()
+  await checkpoint()
 }
 
 function pageInactive() {
@@ -134,9 +142,9 @@ function pageInactive() {
 }
 
 export function scheduleSafeSync() {
-  if (typeof window === 'undefined' || suspended || !tabWritable || !CloudSync.check()) return
+  if (typeof window === 'undefined' || suspended || !tabWritable ) return
   if (!pageInactive()) {
-    CloudSync.setStatus('pending', '已保存到本机，离开窗口后同步')
+    if (CloudSync.check()) CloudSync.setStatus('pending', '已保存到本机，离开窗口后同步')
     return
   }
   // Coalesce blur/visibility/save events; recheck focus when the queue runs.
@@ -152,6 +160,7 @@ async function acknowledge(id: number, revision: number, rows: SafeRow[], signat
 }
 
 async function upload(id: number, rows: SafeRow[], revision: number, reason?: string) {
+  hooks.beforeUpload?.(rows)
   if (!state!.pending) {
     state!.pending = { expectedRevision: revision, requestId: crypto.randomUUID(), rows, ...(reason ? { reason } : {}) }
     await saveState(id) // Persist request identity before networking, including uncertain acknowledgements.
@@ -166,16 +175,22 @@ async function upload(id: number, rows: SafeRow[], revision: number, reason?: st
 
 export function syncSafely(allowRemote = false, automatic = false): Promise<boolean> {
   return exclusive(async () => {
-    if (suspended || !tabWritable || !CloudSync.check()) return false
-    if (automatic && !pageInactive()) return false
-    await localWrites
+    if (suspended || !tabWritable) return false
     if (automatic && !pageInactive()) return false
     try {
+      await hooks.flush?.()
+      await localWrites
+      await checkpoint()
+      if (!CloudSync.check()) return true
+      if (automatic && !pageInactive()) return false
       const id = await identity(); assertIdentity(id)
       if ((await get(OWNER)) && (await get(OWNER)) !== id) {
         CloudSync.setStatus('conflict', '本机属于另一个账号。请在同步页选择保留哪份数据。'); return false
       }
       CloudSync.setStatus('syncing', '正在同步')
+      if (await get(LOCAL_REPLACEMENT_KEY)) {
+        CloudSync.setStatus('conflict', '本机已恢复或导入，请比较云端后确认同步。'); return false
+      }
       if (state!.pending) await upload(id, state!.pending.rows, state!.pending.expectedRevision)
       const local = await hooks.read()
       const signature = await rowsSignatureAsync(local)
@@ -186,13 +201,16 @@ export function syncSafely(allowRemote = false, automatic = false): Promise<bool
       else if (decision === 'push') {
         await upload(id, local, remote.revision)
       } else if (decision === 'pull' && allowRemote) {
-        await saveRecoveryPoint('下载云端前', local, remote, id)
         assertIdentity(id)
-        await hooks.apply(remote.rows, signature)
+        await hooks.apply(remote.rows, signature, { beforeCommit: () => assertIdentity(id) })
         await acknowledge(id, remote.revision, await hooks.read())
       } else {
         CloudSync.setStatus('conflict', decision === 'pull' ? '云端有更新。练习未被打断，请到同步页查看。' : '本机和云端都有不同进度，双方已保留，请到同步页处理。')
         return false
+      }
+      await checkpoint()
+      if (await rowsSignatureAsync(await hooks.read()) !== state!.baseline?.signature) {
+        CloudSync.setStatus('pending', '本机还有更新，离开窗口后继续同步'); return false
       }
       CloudSync.setStatus('success', '已同步到云端')
       return true
@@ -212,40 +230,62 @@ export function syncSafely(allowRemote = false, automatic = false): Promise<bool
 
 export function previewSync(): Promise<SyncPreview> {
   return exclusive(async () => {
+    await hooks.flush?.()
     const id = await identity(); assertIdentity(id)
     const local = await hooks.read(); const remote = await CloudSync.snapshot(); assertIdentity(id)
     return { local, remote, account: id, signature: await rowsSignatureAsync(local) }
   })
 }
 
-export function replaceLocalSnapshot(rows: SafeRow[], reason: string): Promise<void> {
+export async function previewLocalReplacement() {
+  await hooks.flush?.()
+  return { signature: await rowsSignatureAsync(await hooks.read()), owner: (await get(OWNER)) || 0 }
+}
+
+export function replaceLocalSnapshot(rows: SafeRow[], reason: string, options: { files?: import('./dataArchive').Attachment[]; expected?: string; owner?: number } = {}): Promise<void> {
   return exclusive(async () => {
-    const local = await hooks.read()
-    await saveRecoveryPoint(reason, local, undefined, (await get(OWNER)) || 0)
-    await hooks.apply(rows, await rowsSignatureAsync(local))
-    scheduleSafeSync()
+    const wasSuspended = suspended
+    suspended = true
+    try {
+      await hooks.flush?.()
+      const local = await hooks.read(), owner = (await get(OWNER)) || 0
+      const signature = await rowsSignatureAsync(local)
+      if ((options.expected && options.expected !== signature) || (options.owner !== undefined && owner !== options.owner)) throw Error('预览后本机数据或账号发生变化，请重新比较。')
+      await hooks.apply(rows, signature, { files: options.files, replacement: true })
+      await checkpoint()
+      if (CloudSync.check()) CloudSync.setStatus('conflict', '本机已' + reason + '；请比较后同步云端。')
+    } finally { suspended = wasSuspended }
   })
 }
 
 export function resolveSync(preview: SyncPreview, choice: 'local' | 'remote', restored?: SafeRow[]): Promise<void> {
   return exclusive(async () => {
+    await hooks.flush?.()
     const id = await identity(); assertIdentity(id)
     if (id !== preview.account) throw new Error('账号已改变，请重新查看。')
     const remote = await CloudSync.snapshot()
     if (remote.revision !== preview.remote.revision || await rowsSignatureAsync(await hooks.read()) !== preview.signature) throw new Error('查看后数据又发生变化，请重新比较；本次未覆盖。')
-    await saveRecoveryPoint(restored ? '恢复前' : '冲突处理前', preview.local, remote, id)
+    // Reconcile an uncertain old request without replaying its old body over a restoration.
+    if (state!.pending) await CloudSync.receipt(state!.pending.requestId)
     assertIdentity(id)
-    if (choice === 'remote' && !restored) {
-      await hooks.apply(remote.rows, preview.signature)
+    if (restored) {
+      const desired = hooks.upgrade?.(normalizeSyncRows(restored)) ?? normalizeSyncRows(restored)
+      await hooks.apply(desired, preview.signature, { replacement: true })
+      await checkpoint()
+      CloudSync.setStatus('conflict', '已恢复到本机，请重新比较后同步云端。')
+      return
+    }
+    if (choice === 'remote') {
+      await hooks.apply(remote.rows, preview.signature, { beforeCommit: () => assertIdentity(id) })
       await acknowledge(id, remote.revision, await hooks.read())
     } else {
-      const desired = restored ? (hooks.upgrade?.(normalizeSyncRows(restored)) ?? normalizeSyncRows(restored)) : preview.local
-      // A recovery is a new revision, not database rollback. The server backs up the current cloud snapshot.
       state!.pending = undefined
-      await upload(id, desired, remote.revision, restored ? 'restore' : 'resolve')
-      if (restored) { await hooks.apply(desired, preview.signature); await acknowledge(id, state!.baseline!.revision, await hooks.read()) }
+      await upload(id, preview.local, remote.revision, 'resolve')
     }
+    await set(LOCAL_REPLACEMENT_KEY, false)
+    await checkpoint()
     suspended = false
-    CloudSync.setStatus('success', '已同步；覆盖前的副本保留在恢复记录中')
+    const changed = await rowsSignatureAsync(await hooks.read()) !== state!.baseline?.signature
+    CloudSync.setStatus(changed ? 'pending' : 'success', changed ? '已确认版本，本机新变更等待下次同步' : '本机与云端已同步')
   })
 }

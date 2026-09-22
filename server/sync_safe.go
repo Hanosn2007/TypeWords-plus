@@ -2,16 +2,13 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 )
 
@@ -27,7 +24,10 @@ func migrateSafeSync(db *sql.DB) error {
  CREATE TABLE IF NOT EXISTS sync_history(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, revision INTEGER NOT NULL, kind TEXT NOT NULL, bucket TEXT NOT NULL, created_at TEXT NOT NULL, payload BLOB NOT NULL, UNIQUE(user_id,kind,bucket));
  CREATE INDEX IF NOT EXISTS sync_history_user ON sync_history(user_id,id);
  `)
-	return err
+	if err != nil {
+		return err
+	}
+	return migrateLearningHistory(db)
 }
 
 func readSyncSnapshot(tx *sql.Tx, userID int64) (syncSnapshot, error) {
@@ -86,52 +86,6 @@ func snapshotNeedsScopes(snapshot syncSnapshot) bool {
 	return false
 }
 
-func saveSyncHistory(tx *sql.Tx, userID int64, snapshot syncSnapshot, reason string, now time.Time) error {
-	buckets := map[string]string{"hourly": now.Format("2006-01-02T15"), "daily": now.Format("2006-01-02")}
-	if reason == "resolve" || reason == "restore" {
-		buckets[reason] = strconv.FormatInt(snapshot.Revision, 10)
-	}
-	// Existing time buckets already protect this interval. Do not marshal and
-	// gzip the entire account on every autosave merely to INSERT OR IGNORE it.
-	for kind, bucket := range buckets {
-		var exists int
-		err := tx.QueryRow(`SELECT 1 FROM sync_history WHERE user_id=? AND kind=? AND bucket=?`, userID, kind, bucket).Scan(&exists)
-		if err == nil {
-			delete(buckets, kind)
-		} else if err != sql.ErrNoRows {
-			return err
-		}
-	}
-	if len(buckets) == 0 {
-		return nil
-	}
-	raw, err := json.Marshal(snapshot)
-	if err != nil {
-		return err
-	}
-	var buffer bytes.Buffer
-	z := gzip.NewWriter(&buffer)
-	if _, err = z.Write(raw); err != nil {
-		return err
-	}
-	if err = z.Close(); err != nil {
-		return err
-	}
-	for kind, bucket := range buckets {
-		_, err = tx.Exec(`INSERT OR IGNORE INTO sync_history(user_id,revision,kind,bucket,created_at,payload) VALUES(?,?,?,?,?,?)`, userID, snapshot.Revision, kind, bucket, now.Format(time.RFC3339Nano), buffer.Bytes())
-		if err != nil {
-			return err
-		}
-	}
-	for kind, limit := range map[string]int{"hourly": 72, "daily": 30, "resolve": 20, "restore": 20} {
-		_, err = tx.Exec(`DELETE FROM sync_history WHERE user_id=? AND kind=? AND id NOT IN (SELECT id FROM sync_history WHERE user_id=? AND kind=? ORDER BY id DESC LIMIT ?)`, userID, kind, userID, kind, limit)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *server) safeSyncPut(w http.ResponseWriter, r *http.Request, user userView, _ string) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	var p struct {
@@ -153,6 +107,30 @@ func (s *server) safeSyncPut(w http.ResponseWriter, r *http.Request, user userVi
 		if !allowedSyncTypes[row.Type] || seen[row.Type] || !json.Valid(row.Data) || row.DataVersion == nil || *row.DataVersion < 1 {
 			writeError(w, 400, "invalid snapshot row")
 			return
+		}
+		if *row.DataVersion > map[string]int{"dict": 4, "setting": 25, "practice_word": 3, "practice_article": 1}[row.Type] {
+			writeError(w, 428, "unsupported data version")
+			return
+		}
+		if row.Type == "practice_word" && string(row.Data) != "null" {
+			var task map[string]interface{}
+			if json.Unmarshal(row.Data, &task) != nil {
+				writeError(w, 400, "invalid task format")
+				return
+			}
+			if *row.DataVersion == 3 {
+				if task["schemaVersion"] != float64(3) {
+					writeError(w, 400, "task schema/version mismatch")
+					return
+				}
+				if _, ok := task["entries"].(map[string]interface{}); !ok {
+					writeError(w, 400, "invalid task entries")
+					return
+				}
+			} else if version, ok := task["schemaVersion"].(float64); ok && version > 2 {
+				writeError(w, 400, "task schema/version mismatch")
+				return
+			}
 		}
 		seen[row.Type] = true
 	}
@@ -197,12 +175,37 @@ func (s *server) safeSyncPut(w http.ResponseWriter, r *http.Request, user userVi
 		writeError(w, 409, "cloud data changed; both versions have been preserved")
 		return
 	}
-	now := time.Now().UTC()
-	if err = saveSyncHistory(tx, user.ID, current, p.Reason, now); err != nil {
-		writeError(w, 500, "unable to create recovery point; no data was changed")
+	before, _ := semanticRows(current.Rows)
+	incoming, _ := semanticRows(p.Rows)
+	contentChanged := !bytes.Equal(before, incoming)
+	formatChanged := false
+	for _, row := range p.Rows {
+		for _, prior := range current.Rows {
+			if row.Type == prior.Type && prior.DataVersion != nil && *row.DataVersion != *prior.DataVersion {
+				formatChanged = true
+			}
+		}
+	}
+	if !contentChanged && !formatChanged {
+		_, err = tx.Exec("INSERT INTO sync_receipts(user_id,request_id,digest,revision) VALUES(?,?,?,?)", user.ID, p.RequestID, digest, current.Revision)
+		if err == nil {
+			err = retainSyncReceipts(tx, user.ID)
+		}
+		if err != nil || tx.Commit() != nil {
+			writeError(w, 500, "unable to record receipt")
+			return
+		}
+		writeJSON(w, 200, apiResponse{Success: true, Code: 200, Data: map[string]int64{"revision": current.Revision}})
 		return
 	}
+	now := time.Now().UTC()
 	next := current.Revision + 1
+	if contentChanged && (len(current.Rows) > 0 || snapshotHasLearning(p.Rows)) {
+		if err = saveSyncHistory(tx, user.ID, syncSnapshot{Revision: next, Rows: p.Rows}, p.Reason, now); err != nil {
+			writeError(w, 500, "unable to save daily history; no data changed")
+			return
+		}
+	}
 	for _, row := range p.Rows {
 		_, err = tx.Exec(`INSERT INTO sync_items(user_id,type,data,data_version,updated_at,revision) VALUES(?,?,?,?,?,1) ON CONFLICT(user_id,type) DO UPDATE SET data=excluded.data,data_version=excluded.data_version,updated_at=excluded.updated_at,revision=sync_items.revision+1`, user.ID, row.Type, string(row.Data), *row.DataVersion, now.Format(time.RFC3339Nano))
 		if err != nil {
@@ -220,7 +223,7 @@ func (s *server) safeSyncPut(w http.ResponseWriter, r *http.Request, user userVi
 		writeError(w, 500, "unable to save receipt")
 		return
 	}
-	_, err = tx.Exec(`DELETE FROM sync_receipts WHERE user_id=? AND revision < ?`, user.ID, next-100)
+	err = retainSyncReceipts(tx, user.ID)
 	if err != nil {
 		writeError(w, 500, "unable to retain receipts")
 		return
@@ -232,51 +235,9 @@ func (s *server) safeSyncPut(w http.ResponseWriter, r *http.Request, user userVi
 	writeJSON(w, 200, apiResponse{Success: true, Code: 200, Data: map[string]int64{"revision": next}})
 }
 
-func (s *server) syncHistory(w http.ResponseWriter, r *http.Request, user userView, _ string) {
-	if id := r.PathValue("id"); id != "" {
-		var payload []byte
-		if err := s.db.QueryRow(`SELECT payload FROM sync_history WHERE user_id=? AND id=?`, user.ID, id).Scan(&payload); err == sql.ErrNoRows {
-			writeError(w, 404, "recovery point not found")
-			return
-		} else if err != nil {
-			writeError(w, 500, "unable to read recovery point")
-			return
-		}
-		z, err := gzip.NewReader(bytes.NewReader(payload))
-		if err != nil {
-			writeError(w, 500, "invalid recovery point")
-			return
-		}
-		defer z.Close()
-		raw, err := io.ReadAll(io.LimitReader(z, maxRequestBytes+1))
-		if err != nil || len(raw) > maxRequestBytes {
-			writeError(w, 500, "invalid recovery point")
-			return
-		}
-		writeJSON(w, 200, apiResponse{Success: true, Code: 200, Data: json.RawMessage(raw)})
-		return
-	}
-	rows, err := s.db.Query(`SELECT id,revision,kind,created_at FROM sync_history WHERE user_id=? ORDER BY id DESC LIMIT 142`, user.ID)
-	if err != nil {
-		writeError(w, 500, "unable to list recovery points")
-		return
-	}
-	defer rows.Close()
-	result := []map[string]interface{}{}
-	for rows.Next() {
-		var id, rev int64
-		var kind, created string
-		if rows.Scan(&id, &rev, &kind, &created) != nil {
-			writeError(w, 500, "unable to read recovery points")
-			return
-		}
-		result = append(result, map[string]interface{}{"id": id, "revision": rev, "kind": kind, "createdAt": created})
-	}
-	if rows.Err() != nil {
-		writeError(w, 500, "unable to read recovery points")
-		return
-	}
-	writeJSON(w, 200, apiResponse{Success: true, Code: 200, Data: result})
+func retainSyncReceipts(tx *sql.Tx, userID int64) error {
+	_, err := tx.Exec(`DELETE FROM sync_receipts WHERE user_id=? AND rowid NOT IN (SELECT rowid FROM sync_receipts WHERE user_id=? ORDER BY rowid DESC LIMIT 1000)`, userID, userID)
+	return err
 }
 
 func (s *server) rejectLegacySyncWrite(w http.ResponseWriter, _ *http.Request, _ userView, _ string) {

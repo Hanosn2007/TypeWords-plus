@@ -1,4 +1,5 @@
 import { useRuntimeStore } from '../stores'
+import { observeServerClock } from './historyPolicy'
 
 export const CLOUD_TOKEN_KEY = 'typewords_cloud_token'
 
@@ -50,11 +51,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
     ...options,
     headers,
+    signal: options.signal ?? AbortSignal.timeout(15000),
   })
   const body = (await response.json().catch(() => null)) as ApiResponse<T> | null
+  observeServerClock(response.headers.get('Date'))
   if (!response.ok || !body?.success) {
     if (response.status === 428 && import.meta.client) window.dispatchEvent(new Event('typewords-update-required'))
-    if (response.status === 401 && import.meta.client) {
+    if (response.status === 401 && import.meta.client && getToken() === token) {
       localStorage.removeItem(CLOUD_TOKEN_KEY)
     }
     throw new CloudSyncError(body?.msg || `Request failed (${response.status})`, response.status)
@@ -117,27 +120,15 @@ export class CloudSync {
     }
   }
 
-  static async fetchMeta(types: string[]): Promise<CloudSyncRow[]> {
-    return await request<CloudSyncRow[]>(`/sync/meta?types=${encodeURIComponent(types.join(','))}`)
-  }
-
-  static async fetchData(types: string[]): Promise<CloudSyncRow[]> {
-    return await request<CloudSyncRow[]>(`/sync/data?types=${encodeURIComponent(types.join(','))}`)
-  }
-
-  static async upsert(rows: CloudSyncRow[], options: { keepalive?: boolean } = {}): Promise<boolean> {
-    return await request<boolean>('/sync/data', {
-      method: 'PUT',
-      body: JSON.stringify({ rows }),
-      keepalive: options.keepalive,
-    })
-  }
 
   static snapshot() { return request<import('./syncPolicy').SafeSnapshot>('/sync/snapshot') }
   static putSnapshot(payload: { expectedRevision: number; requestId: string; rows: import('./syncPolicy').SafeRow[]; reason?: string }) {
     return request<{ revision: number }>('/sync/snapshot', { method: 'PUT', body: JSON.stringify(payload) })
   }
-  static history() { return request<Array<{ id: number; revision: number; kind: string; createdAt: string }>>('/sync/history') }
-  static historySnapshot(id: number) { return request<import('./syncPolicy').SafeSnapshot>(`/sync/history/${id}`) }
+  static history() { return request<Array<{ id: string; revision: number; kind: string; day: string; createdAt: string; deletedAt: string; summary: { books?: Array<{ name: string; learned: number }>; unfinished?: number } }>>('/sync/history') }
+  static historySnapshot(id: string) { return request<import('./syncPolicy').SafeSnapshot>(`/sync/history/${encodeURIComponent(id)}`) }
+  static deleteHistory(id: string) { return request<boolean>(`/sync/history/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+  static undoHistoryDelete(id: string) { return request<boolean>(`/sync/history/${encodeURIComponent(id)}/undo`, { method: 'POST' }) }
+  static receipt(id: string) { return request<{ revision: number } | null>(`/sync/receipts/${encodeURIComponent(id)}`) }
   static backupStatus() { return request<{ enabled: boolean; server: { file: string; createdAt: string } | null; mac: { file: string; verifiedAt: string } | null }>('/admin/sync/backup-status') }
 }

@@ -41,7 +41,7 @@ import { useWordCatalog } from '@typewords/core/composables/useWordCatalog.ts'
 import { loadLibraryBook } from '@typewords/core/utils/libraryBooks.ts'
 import {
   APP_NAME,
-  AppEnv,
+
   DICT_LIST,
   LIB_JS_URL,
   Old_Host,
@@ -50,12 +50,10 @@ import {
   WordPracticeModeNameMap,
   WordPracticeModeUrlMap,
 } from '@typewords/core/config/env.ts'
-import { myDictList } from '@typewords/core/apis'
 import PracticeWordListDialog from '@typewords/core/components/word/PracticeWordListDialog.vue'
 import ImportBanner from '@typewords/core/components/ImportBanner.vue'
 import ReleaseBanner from '@typewords/core/components/ReleaseBanner.vue'
 import ShufflePracticeSettingDialog from '@typewords/core/components/word/ShufflePracticeSettingDialog.vue'
-import { deleteDict } from '@typewords/core/apis/dict.ts'
 import { getBookLearning, getUnitProgress, getUnitWords, isFollowingStudyUnit } from '@typewords/core/utils/bookLearning.ts'
 import BookLearningSettingsDialog from '@typewords/core/components/word/BookLearningSettingsDialog.vue'
 import BookUnitPanel from '@typewords/core/components/word/BookUnitPanel.vue'
@@ -215,12 +213,6 @@ async function init() {
   if (isApplyingBookSettings) return
   await refreshStatisticsBundle()
   const version = bookSwitchVersion
-  if (AppEnv.CAN_REQUEST) {
-    let res = await myDictList({ type: 'word' })
-    if (res.success && version === bookSwitchVersion) {
-      store.setState(Object.assign(store.$state, res.data))
-    }
-  }
 
   document.removeEventListener('visibilitychange', onvisibilitychange)
   document.addEventListener('visibilitychange', onvisibilitychange)
@@ -469,14 +461,7 @@ let isManageDict = $ref(false)
 let selectIds = $ref([])
 
 async function handleBatchDel() {
-  if (AppEnv.CAN_REQUEST) {
-    let res = await deleteDict(null, selectIds)
-    if (res.success) {
-      init()
-    } else {
-      Toast.error(res.msg)
-    }
-  } else {
+  {
     selectIds.forEach(id => {
       let r = store.word.bookList.findIndex(v => v.id === id)
       if (r !== -1) {

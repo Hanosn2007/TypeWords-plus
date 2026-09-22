@@ -10,19 +10,19 @@ const rows = n => policy.normalizeSyncRows([{ type: 'dict', data_version: 4, dat
 const clone = v => v === undefined ? v : structuredClone(v)
 class CloudSyncError extends Error { constructor(message, statusCode) { super(message); this.statusCode = statusCode } }
 function setup() {
-  let local = rows(1000), remote = { revision: 0, rows: [] }, status, loseAck = false, user = 1, backupFails = false
+  let local = rows(1000), remote = { revision: 0, rows: [] }, status, loseAck = false, user = 1, applyFails = false, checkpoints = 0
   const storage = new Map(), receipts = new Map(), calls = [], delays = [], tokens = new Map([['token', 'one']])
   const events = new Map()
   let focused = true, visibility = 'visible'
   const db = {
     get: async key => clone(storage.get(key)),
     set: async (key, value) => { storage.set(key, clone(value)) },
-    update: async (key, fn) => { if (backupFails) throw new Error('quota exceeded'); storage.set(key, clone(fn(clone(storage.get(key))))) },
   }
   const CloudSync = {
     getStatus: () => ({ status: status?.[0] || 'idle' }),
     check: () => !!tokens.get('token'), setStatus: (...args) => { status = args },
     me: async () => ({ id: user }), snapshot: async () => clone(remote),
+    receipt: async id => receipts.get(id) || null,
     putSnapshot: async payload => {
       calls.push(clone(payload))
       if (receipts.has(payload.requestId)) return receipts.get(payload.requestId)
@@ -41,13 +41,15 @@ function setup() {
       { addEventListener: (name, fn) => events.set(name, fn), dispatchEvent: event => events.get(event.type)?.(event) }, { getItem: key => tokens.get(key) }, (_fn, delay) => { delays.push(delay); return 1 }, () => {},
       { get visibilityState() { return visibility }, hasFocus: () => focused, addEventListener: (name, fn) => events.set(name, fn) },
     )
-    module.exports.configureSafeSync({ read: async () => clone(local), apply: async (next, expected) => {
+    module.exports.configureSafeSync({ read: async () => clone(local), checkpoint: async () => { checkpoints++ }, apply: async (next, expected, options) => {
+      if (applyFails) throw Error('quota exceeded')
       assert.equal(policy.rowsSignature(local), expected); local = clone(next)
+      if (options?.replacement) storage.set('typewords-local-replacement-pending', true)
     } })
     return module.exports
   }
   let api = load()
-  return { events, focus: value => { focused = value }, hide: () => { visibility = 'hidden' }, get api() { return api }, reopen() { api = load() }, calls, delays, storage, get local() { return local }, set local(v) { local = v }, get remote() { return remote }, set remote(v) { remote = v }, get status() { return status }, loseAck: () => { loseAck = true }, failBackup: () => { backupFails = true }, switchUser: () => { user = 2; tokens.set('token', 'two') } }
+  return { events, tokens, focus: value => { focused = value }, hide: () => { visibility = 'hidden' }, get api() { return api }, reopen() { api = load() }, calls, delays, storage, get local() { return local }, set local(v) { local = v }, get remote() { return remote }, set remote(v) { remote = v }, get status() { return status }, get checkpoints() { return checkpoints }, loseAck: () => { loseAck = true }, failApply: value => { applyFails = value }, switchUser: () => { user = 2; tokens.set('token', 'two') } }
 }
 
 test('lost acknowledgement retries the persisted request ID and does not discard newer local work', async () => {
@@ -70,15 +72,15 @@ test('two-device edits stop with a conflict and neither side changes', async () 
   assert.equal(h.calls.length, 1)
   assert.equal(policy.rowsSignature(h.local), policy.rowsSignature(rows(1100)))
 })
-test('remote changes never interrupt active practice; explicit resolution backs up both sides', async () => {
+test('remote changes never interrupt active practice; explicit resolution checkpoints the selected state', async () => {
   const h = setup(); await h.api.syncSafely()
   h.remote = { revision: 2, rows: rows(1200) }
   assert.equal(await h.api.syncSafely(false), false)
   const preview = await h.api.previewSync()
   await h.api.resolveSync(preview, 'remote')
   assert.equal(policy.rowsSignature(h.local), policy.rowsSignature(rows(1200)))
-  const points = await h.api.localRecoveryPoints()
-  assert.ok(points.some(p => p.reason === '冲突处理前' && p.remote.revision === 2))
+  assert.ok(h.checkpoints > 0)
+  assert.equal(h.storage.has('typewords-sync-recovery-v2'), false)
 })
 test('local changes after preview abort the replacement', async () => {
   const h = setup(); await h.api.syncSafely()
@@ -86,14 +88,20 @@ test('local changes after preview abort the replacement', async () => {
   await assert.rejects(h.api.resolveSync(preview, 'remote'), /发生变化/)
   assert.equal(policy.rowsSignature(h.local), policy.rowsSignature(rows(1500)))
 })
-test('ordinary sync does not create local recovery copies; explicit replacement still requires one', async () => {
-  const h = setup(); h.failBackup()
+test('failed local replacement leaves both copies intact and later saves remain usable', async () => {
+  const h = setup()
   assert.equal(await h.api.syncSafely(), true)
   assert.equal(h.calls.length, 1)
-  assert.equal((await h.api.localRecoveryPoints()).length, 0)
+  assert.equal(h.storage.has('typewords-sync-recovery-v2'), false)
   const preview = await h.api.previewSync()
-  await assert.rejects(h.api.resolveSync(preview, 'remote'), /quota/)
+  h.failApply(true)
+  await assert.rejects(h.api.replaceLocalSnapshot(rows(800), '恢复'), /quota/)
   assert.equal(h.calls.length, 1)
+  assert.equal(policy.rowsSignature(h.local), policy.rowsSignature(rows(1000)))
+  h.failApply(false)
+  await h.api.replaceLocalSnapshot(rows(800), '恢复')
+  assert.equal(policy.rowsSignature(h.local), policy.rowsSignature(rows(800)))
+  assert.equal(h.remote.revision, 1)
 })
 test('account change never silently uploads previous account data', async () => {
   const h = setup(); await h.api.syncSafely(); h.switchUser(); h.remote = { revision: 0, rows: [] }
@@ -168,4 +176,30 @@ test('explicit update can reload after local flush without a second cloud-close 
   assert.notEqual(h.api.closeProtectionMessage(),'')
   await h.api.allowSavedReload()
   assert.equal(h.api.closeProtectionMessage(),'')
+})
+
+test('offline restoration does not require a login or server and cannot replay an uncertain old upload', async () => {
+  const h=setup(); h.loseAck(); await h.api.syncSafely()
+  h.tokens.delete('token')
+  const preview=await h.api.previewLocalReplacement()
+  await h.api.replaceLocalSnapshot(rows(1200),'恢复',{expected:preview.signature,owner:preview.owner})
+  assert.equal(h.remote.revision,1)
+  h.tokens.set('token','one');h.reopen()
+  assert.equal(await h.api.syncSafely(),false)
+  assert.equal(h.calls.length,1)
+  const comparison=await h.api.previewSync()
+  await h.api.resolveSync(comparison,'local')
+  assert.equal(h.remote.revision,2)
+  assert.equal(policy.rowsSignature(h.remote.rows),policy.rowsSignature(rows(1200)))
+  assert.equal(h.storage.get('typewords-local-replacement-pending'),false)
+})
+
+test('keyed persistence failures clear only when that data is successfully saved', async () => {
+  const h=setup()
+  await assert.rejects(h.api.serializeSyncLocalWrite(async()=>{throw Error('disk')},'dict'))
+  await h.api.serializeSyncLocalWrite(async()=>{},'setting')
+  await assert.rejects(h.api.waitForLocalSave())
+  await h.api.serializeSyncLocalWrite(async()=>{},'dict');await h.api.waitForLocalSave()
+  await assert.rejects(h.api.serializeSyncLocalWrite(async()=>{throw Error('import failed')},'replacement',false))
+  await h.api.waitForLocalSave()
 })
