@@ -19,6 +19,15 @@ function freeze(value: any) {
   Object.values(value).forEach(freeze); Object.freeze(value)
 }
 
+test('a fresh 1940-word book configured for 40 creates a 40-word task', () => {
+  const b = book({ words: Array.from({ length: 1940 }, (_, i) => ({ word: `pet-${i}` })), length: 1940, lastLearnIndex: 0, perDayStudyNumber: 40 })
+  const first = plan(b).task
+  const reopened = plan(b).task
+  assert.equal(first.new.length, 40)
+  assert.equal(first.review.length, 0)
+  assert.deepEqual(wordKeys(first.new), wordKeys(reopened.new))
+})
+
 test('ordinary books retain cursor, ignored words and learned fallback without input writes', () => {
   const b = book(); freeze(b)
   const p = plan(b, new Set(['c']))

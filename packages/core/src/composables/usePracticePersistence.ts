@@ -130,7 +130,7 @@ function serializePracticeWordCache(data: PracticeWordCache | null, unifiedTimin
   const statStoreData = !unifiedTiming && data.statStoreData
     ? stripPracticeTimeAccounting(data.statStoreData)
     : data.statStoreData
-  return {
+  const compact = {
     dictId: data.dictId,
     ...(book?.library ? { libraryVersion: data.libraryVersion ?? data.taskWords.libraryVersion ?? book.library.version } : {}),
     practiceType: data.practiceType,
@@ -144,6 +144,9 @@ function serializePracticeWordCache(data: PracticeWordCache | null, unifiedTimin
     statStoreData,
     skipCheckpoint: serializeSkipCheckpoint(data.skipCheckpoint),
   }
+  // Freeze the small checkpoint before queuing the asynchronous write. Cloning
+  // before compaction needlessly traverses every definition/example in a round.
+  return JSON.parse(JSON.stringify(compact)) as PracticeWordCacheStored
 }
 
 async function restorePracticeWordCache(data: PracticeWordCacheStored | null): Promise<PracticeWordCache | null> {

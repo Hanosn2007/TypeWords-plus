@@ -1155,8 +1155,8 @@ async function savePracticeDataIns(where?: string, force: boolean = false) {
     practiceType: activePracticeType,
     practiceMode: sessionMode,
     taskWords,
-    practiceData: cloneDeep(data),
-    statStoreData: cloneDeep(statStore.$state),
+    practiceData: data,
+    statStoreData: statStore.$state,
     skipCheckpoint,
   }, { unifiedTiming: true })
 }
@@ -1438,7 +1438,7 @@ useEvents([
 </script>
 
 <template>
-  <PracticeLayout v-loading="loading" panelLeft="var(--word-panel-margin-left)">
+  <PracticeLayout v-loading="loading" panelLeft="var(--word-panel-margin-left)" adaptive-panel>
     <template v-slot:practice>
       <div class="practice-word">
         <div class="fixed z-99999 center mt-3" v-if="statStore.timerPaused">
@@ -1466,7 +1466,7 @@ useEvents([
           <!--        前后单词-->
           <div
             class="fixed z-1 top-4 w-full hidden md:block"
-            style="left: calc(50vw + var(--aside-width) / 2 - var(--toolbar-width) / 2); width: var(--toolbar-width)"
+            style="left: calc(var(--practice-center-x) - var(--toolbar-width) / 2); width: var(--toolbar-width)"
             v-if="settingStore.showNearWord"
           >
             <Tooltip :title="`上一个(${settingStore.shortcutKeyMap[ShortcutKey.Previous]})`">
