@@ -70,7 +70,7 @@ defineProps<{
     z-index: 1000;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-end;
     padding: 1rem;
     box-sizing: border-box;
 

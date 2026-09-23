@@ -164,7 +164,9 @@ function updateCurrentWordInfo() {
 }
 
 watch(
-  () => props.word,
+  // A stage can reuse the same Word object (especially a one-word round).
+  // Answers belong to the current exercise, not only to the word identity.
+  [() => props.word, () => practiceStore.stage, () => settingStore.wordPracticeType],
   () => resetState(WordPlayTrigger.NewWord)
 )
 
@@ -172,6 +174,8 @@ function resetState(trigger: WordPlayTrigger) {
   clearJumpTimer()
   cancelWordPracticeAudio()
   wrong = input = ''
+  showFullWord = false
+  selectIndex = -1
   wordRepeatCount = 0
   showWordResult.value = inputLock = completeSelect = showAllCandidates = false
   editingNote = false

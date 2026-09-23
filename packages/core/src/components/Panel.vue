@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, provide } from 'vue'
 import { useSettingStore } from '../stores/setting'
-import { Tooltip, Close } from '@typewords/base'
+import { Close } from '@typewords/base'
 import { ShortcutKey } from '../types'
 
 const settingStore = useSettingStore()
@@ -18,9 +18,10 @@ provide(
         <div class="color-main">
           <slot name="title"></slot>
         </div>
-        <Tooltip :title="`${$t('close')}(${settingStore.shortcutKeyMap[ShortcutKey.TogglePanel]})`">
-          <Close @click="settingStore.showPanel = false" />
-        </Tooltip>
+        <Close
+          :title="`${$t('close')}(${settingStore.shortcutKeyMap[ShortcutKey.TogglePanel]})`"
+          @click="settingStore.showPanel = false"
+        />
       </header>
       <div class="flex-1 overflow-auto">
         <slot></slot>
